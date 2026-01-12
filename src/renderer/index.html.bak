@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Workshop Pro | Management Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+        * { scrollbar-width: thin; scrollbar-color: #3f46e1 #0f172a; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #3f46e1; border-radius: 4px; }
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #e2e8f0; }
+        input:invalid { border-color: #ef4444; }
+        .no-print { @media print { display: none; } }
+        @media print { .print-only { display: block; } .no-print { display: none; } }
+        .glass-dark { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(51, 65, 85, 0.5); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+        const { ipcRenderer } = require('electron');
+
+        // ===== SRI LANKAN LOCALIZATION & HELPERS =====
+        const SL_CONFIG = {
+            VAT_RATE: 0.08,  // 8% VAT for Sri Lanka
+            CURRENCY: 'LKR',
+            CURRENCY_SYMBOL: 'රු.',
+            DATE_FORMAT: 'DD/MM/YYYY'
+        };
+
+        // Format currency to LKR with thousands separator
+        const formatLKR = (amount) => {
+            if (!amount && amount !== 0) return 'රු. 0.00';
+            const num = parseFloat(amount).toFixed(2);
+            return 'රු. ' + num.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        };
+
+        // Format date to DD/MM/YYYY
+        const formatDateSL = (dateString) => {
+            if (!dateString) return '-';
+            const date = new Date(dateString);
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            return `${day}/${month}/${year}`;
+        };
+
+        // Validate Sri Lankan phone number (071234567 or 0112345678)
+        const isValidSLPhone = (phone) => {
+            const cleaned = phone.replace(/\D/g, '');
+            return /^0[1-9]\d{8}$/.test(cleaned);
+        };
+
+        // Validate Sri Lankan license plate - multiple formats supported:
+        // Format 1: ABC-1234 or ABC 1234 (3 letters + 4 digits)
+        // Format 2: GS-5025 or GS 5025 (2 letters + 4 digits)
+        // Format 3: 300-2330 or 300 2330 (numeric only - 3-4 digits + 4 digits)
+        const isValidSLPlate = (plate) => {
+            const cleaned = plate.toUpperCase().trim();
+            
+            // Format 1: Three uppercase letters followed by optional separator and 4 digits
+            const format1 = /^[A-Z]{3}[-\s]?[0-9]{4}$/.test(cleaned);
+            
+            // Format 2: Two uppercase letters followed by optional separator and 4 digits
+            const format2 = /^[A-Z]{2}[-\s]?[0-9]{4}$/.test(cleaned);
+            
+            // Format 3: Pure numeric (3-4 digits, separator, 4 digits) e.g., 300-2330 or 12-3456
+            const format3 = /^[0-9]{2,4}[-\s]?[0-9]{4}$/.test(cleaned);
+            
+            return format1 || format2 || format3;
+        };
+
+        // Helper for DB calls
+        const callDB = async (type, payload) => {
+            const res = await ipcRenderer.invoke(type, payload);
+            if (!res.success) console.error(`Database Error (${type}):`, res.error);
+            return res;
+        };
+
+        // --- UI COMPONENTS ---
+
+        const Input = ({ label, name, type="text", required=false, pattern, placeholder, defaultValue, min, step }) => (
+            <div className="flex flex-col mb-4">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">{label}</label>
+                <input 
+                    name={name}
+                    type={type} 
+                    required={required} 
+                    pattern={pattern}
+                    placeholder={placeholder}
+                    defaultValue={defaultValue}
+                    min={min}
+                    step={step}
+                    className="px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all text-sm text-slate-200 placeholder-slate-500" 
+                />
+            </div>
+        );
+
+        const App = () => {
+            const [view, setView] = useState('dashboard');
+            const [selectedJob, setSelectedJob] = useState(null);
+            const [techUser, setTechUser] = useState(null);
+            const [appError, setAppError] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+
+            // Global error handler
+            const showError = (title, message) => {
+                setAppError({ title, message });
+            };
+
+            if (view === 'tech-login') return <TechLogin onLogin={(u) => { setTechUser(u); setView('tech-dash'); }} />;
+            if (view === 'tech-dash') return <TechDash user={techUser} onLogout={() => { setTechUser(null); setView('dashboard'); }} />;
+
+            return (
+                <>
+                    {appError && (
+                        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+                            <div className="glass-dark rounded-2xl shadow-2xl max-w-md w-full p-8 border-t-2 border-red-500/50">
+                                <h2 className="text-lg font-bold text-red-400 mb-3 flex items-center"><span className="mr-2">⚠</span>{appError.title}</h2>
+                                <p className="text-slate-400 text-sm mb-6">{appError.message}</p>
+                                <button onClick={() => setAppError(null)} className="w-full bg-red-600/20 hover:bg-red-600/30 text-red-400 px-4 py-2 rounded-lg font-semibold text-sm border border-red-500/30 transition-colors">Dismiss</button>
+                            </div>
+                        </div>
+                    )}
+                    <div className="flex h-screen overflow-hidden bg-slate-950">
+                        {/* Sidebar */}
+                        <aside className="w-64 bg-slate-900/80 border-r border-slate-800/50 flex flex-col p-4 no-print backdrop-blur-sm">
+                            <div className="px-4 py-3 text-white font-bold mb-8 text-sm tracking-wide">
+                                <div className="text-indigo-400 text-lg font-black">⚙</div>
+                                <div className="mt-1">WORKSHOP PRO</div>
+                            </div>
+                            <nav className="flex-1 space-y-1">
+                                <NavButton icon="📊" label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+                                <NavButton icon="📦" label="Inventory" active={view === 'inventory'} onClick={() => setView('inventory')} />
+                                <NavButton icon="📈" label="Reports" active={view === 'reports'} onClick={() => setView('reports')} />
+                            </nav>
+                            <div className="pt-4 border-t border-slate-800/50 space-y-2">
+                                <button onClick={() => setView('tech-login')} className="w-full px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 rounded-lg font-semibold text-xs uppercase tracking-wide border border-indigo-500/30 transition-colors">
+                                    🔐 Tech Mode
+                                </button>
+                            </div>
+                        </aside>
+
+                        {/* Main Content Area */}
+                        <main className="flex-1 overflow-y-auto p-8 bg-gradient-to-br from-slate-950 via-slate-900/50 to-slate-950">
+                            {view === 'dashboard' && <Dashboard onOpenJob={(id) => { setSelectedJob(id); setView('job-detail'); }} />}
+                            {view === 'job-detail' && <JobDetail jobId={selectedJob} onBack={() => setView('dashboard')} onError={showError} />}
+                            {view === 'inventory' && <Inventory onError={showError} />}
+                            {view === 'reports' && <Reports onError={showError} />}
+                        </main>
+                    </div>
+                </>
+            );
+        };
+
+        const NavButton = ({ icon, label, active, onClick }) => (
+            <button 
+                onClick={onClick}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm transition-all ${
+                    active 
+                        ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50 shadow-lg shadow-indigo-500/5' 
+                        : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-300'
+                }`}
+            >
+                <span className="text-lg">{icon}</span>
+                <span>{label}</span>
+            </button>
+        );
+        };
+
+        const Dashboard = ({ onOpenJob }) => {
+            const [jobs, setJobs] = useState([]);
+            const [showIntake, setShowIntake] = useState(false);
+
+            const loadJobs = async () => {
+                const res = await callDB('db-query', { 
+                    sql: "SELECT j.*, v.license_plate, v.make_model FROM jobs j JOIN vehicles v ON j.vehicle_id = v.vehicle_id WHERE j.status != 'completed' ORDER BY j.created_at DESC" 
+                });
+                if (res.success) setJobs(res.data);
+            };
+
+            useEffect(() => { loadJobs(); }, []);
+
+            const statuses = {
+                pending: { color: 'bg-slate-700/30 text-slate-300 border-slate-600/50', label: 'Pending' },
+                'in-progress': { color: 'bg-indigo-700/30 text-indigo-300 border-indigo-600/50', label: 'In Progress' },
+                waiting: { color: 'bg-yellow-700/30 text-yellow-300 border-yellow-600/50', label: 'Waiting' }
+            };
+
+            return (
+                <div className="animate-in fade-in duration-500 space-y-6">
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <h1 className="text-3xl font-bold text-white tracking-tight">Active Jobs</h1>
+                            <p className="text-slate-400 text-sm mt-1">Manage workshop floor operations</p>
+                        </div>
+                        <button onClick={() => setShowIntake(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold text-sm shadow-lg shadow-indigo-500/20 transition-all active:scale-95">
+                            + New Intake
+                        </button>
+                    </div>
+
+                    {jobs.length === 0 ? (
+                        <div className="glass-dark rounded-xl p-16 text-center border border-slate-700/50">
+                            <p className="text-slate-400 font-medium">No active jobs. Start with Vehicle Intake.</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {jobs.map(job => (
+                                <div 
+                                    key={job.job_id} 
+                                    onClick={() => onOpenJob(job.job_id)} 
+                                    className="glass-dark p-6 rounded-xl border border-slate-700/50 cursor-pointer hover:border-indigo-500/50 hover:bg-indigo-600/5 transition-all group"
+                                >
+                                    <div className="flex justify-between items-start mb-4">
+                                        <span className={`text-xs font-semibold px-3 py-1 rounded-full border ${statuses[job.status]?.color || 'bg-slate-700/30 text-slate-300 border-slate-600/50'}`}>
+                                            {statuses[job.status]?.label || job.status}
+                                        </span>
+                                        <span className="text-xs text-slate-500 font-mono">#{job.job_id}</span>
+                                    </div>
+                                    <h2 className="text-xl font-bold text-white mb-1 group-hover:text-indigo-400 transition-colors">{job.license_plate}</h2>
+                                    <p className="text-slate-400 text-sm mb-4">{job.make_model}</p>
+                                    <div className="flex justify-between items-center text-xs text-slate-500 pt-4 border-t border-slate-700/50 group-hover:text-indigo-400 transition-colors">
+                                        <span>{new Date(job.created_at).toLocaleDateString()}</span>
+                                        <span className="group-hover:translate-x-1 transition-transform">→</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {showIntake && <IntakeModal onClose={() => setShowIntake(false)} onSaved={loadJobs} />}
+                </div>
+            );
+        };
+
+        const IntakeModal = ({ onClose, onSaved }) => {
+            const [photoPath, setPhotoPath] = useState(null);
+            const [technicians, setTechnicians] = useState([]);
+            const fileInput = useRef();
+
+            useEffect(() => {
+                const loadTechs = async () => {
+                    const res = await callDB('db-query', { sql: "SELECT user_id, full_name FROM users WHERE role = 'technician'" });
+                    if (res.success) setTechnicians(res.data);
+                };
+                loadTechs();
+            }, []);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const d = Object.fromEntries(formData.entries());
+                
+                // --- DATA VALIDATION (SRI LANKAN) ---
+                if (!d.plate || !d.plate.trim()) return alert("License plate is required");
+                if (!d.owner || !d.owner.trim()) return alert("Owner name is required");
+                if (!d.phone || !d.phone.trim()) return alert("Contact phone is required");
+                if (!d.mileage) return alert("Arrival mileage is required");
+                if (!d.model || !d.model.trim()) return alert("Vehicle make & model is required");
+
+                if (!isValidSLPlate(d.plate)) return alert("Invalid license plate format.\nAccepted formats:\n• ABC-1234 (3 letters + 4 digits)\n• GS-5025 (2 letters + 4 digits)\n• 300-2330 (numeric format)");
+                if (!isValidSLPhone(d.phone)) return alert("Invalid phone number. Use Sri Lankan format: 071234567 or 0112345678");
+                if (parseInt(d.mileage) < 0) return alert("Mileage cannot be negative.");
+
+                try {
+                    // 0. Upload Photo if provided (CRITICAL FIX - was just using path without uploading)
+                    let uploadedPhotoPath = null;
+                    if (photoPath && photoPath.startsWith('data:image')) {
+                        const photoRes = await callDB('upload-photo', { base64Data: photoPath });
+                        if (photoRes.success) {
+                            uploadedPhotoPath = photoRes.filePath;
+                        } else {
+                            console.warn("Photo upload warning:", photoRes.error);
+                            // Continue without photo - not a blocker
+                        }
+                    }
+
+                    // 1. Check for Ownership Change
+                    const existingV = await callDB('db-query', { 
+                        sql: "SELECT current_owner, contact_number FROM vehicles WHERE license_plate = ?", 
+                        params: [d.plate.toUpperCase()] 
+                    });
+
+                    if (existingV.success && existingV.data.length > 0) {
+                        const old = existingV.data[0];
+                        if (old.current_owner !== d.owner) {
+                            // Log ownership history change
+                            await callDB('db-run', {
+                                sql: "INSERT INTO ownership_history (vehicle_id, old_owner, new_owner, mileage_at_transfer) SELECT vehicle_id, ?, ?, ? FROM vehicles WHERE license_plate = ?",
+                                params: [old.current_owner, d.owner, d.mileage, d.plate.toUpperCase()]
+                            });
+                        }
+                    }
+
+                    // 2. Upsert Vehicle (Handles all fields)
+                    const vRes = await callDB('db-run', {
+                        sql: "INSERT INTO vehicles (license_plate, vin, make_model, current_owner, contact_number, photo_path) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(license_plate) DO UPDATE SET current_owner=excluded.current_owner, contact_number=excluded.contact_number, photo_path=COALESCE(excluded.photo_path, vehicles.photo_path), make_model=excluded.make_model, vin=excluded.vin",
+                        params: [d.plate.toUpperCase(), d.vin || null, d.model, d.owner, d.phone, uploadedPhotoPath || null]
+                    });
+
+                    if (!vRes.success) {
+                        console.error("Vehicle Save Error:", vRes.error);
+                        return alert("Vehicle Save Failed: " + vRes.error);
+                    }
+
+                    // 3. Create Job with Technician Assignment
+                    const vSearch = await callDB('db-query', { sql: "SELECT vehicle_id FROM vehicles WHERE license_plate = ?", params: [d.plate.toUpperCase()] });
+                    
+                    if (!vSearch.success || !vSearch.data || vSearch.data.length === 0) {
+                        return alert("Failed to retrieve vehicle ID. Please try again.");
+                    }
+
+                    const vId = vSearch.data[0].vehicle_id;
+                    const techId = d.technician && d.technician !== '' ? d.technician : null;
+
+                    const jRes = await callDB('db-run', {
+                        sql: "INSERT INTO jobs (vehicle_id, technician_id, mileage_in, status) VALUES (?, ?, ?, 'pending')",
+                        params: [vId, techId, parseInt(d.mileage)]
+                    });
+                    if (jRes.success) {
+                        onSaved();
+                        onClose();
+                    } else {
+                        console.error("Job Creation Error:", jRes.error);
+                        alert("Job Creation Failed: " + jRes.error);
+                    }
+                } catch (error) {
+                    console.error("Form Submission Error:", error);
+                    alert("An error occurred: " + error.message);
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
+                    <form onSubmit={handleSubmit} className="glass-dark p-8 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-slate-700/50 animate-in zoom-in duration-300">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-white">New Vehicle Intake</h2>
+                            <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-200 text-2xl">✕</button>
+                        </div>
+                        
+                        <div className="mb-6">
+                            <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Vehicle Photo</label>
+                            <div 
+                                onClick={() => fileInput.current.click()} 
+                                className="w-full h-40 bg-slate-900/50 border-2 border-dashed border-slate-600/50 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:bg-indigo-600/5 hover:border-indigo-500/50 transition-all overflow-hidden"
+                            >
+                                {photoPath ? (
+                                    <div className="text-center p-4">
+                                        <p className="text-indigo-400 font-semibold text-sm">✓ Photo Attached</p>
+                                        <p className="text-xs text-slate-500 mt-1 truncate max-w-xs">File ready</p>
+                                    </div>
+                                ) : (
+                                    <div className="text-center">
+                                        <span className="text-3xl mb-2 block opacity-40">📷</span>
+                                        <span className="text-xs font-medium text-slate-400">Click to upload car photo</span>
+                                    </div>
+                                )}
+                                <input type="file" ref={fileInput} className="hidden" accept="image/*" onChange={(e) => {
+                                    if (!e.target.files[0]) return;
+                                    const file = e.target.files[0];
+                                    const reader = new FileReader();
+                                    reader.onload = (evt) => {
+                                        setPhotoPath(evt.target.result);
+                                    };
+                                    reader.readAsDataURL(file);
+                                }} />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <Input label="License Plate" name="plate" required placeholder="ABC-1234" />
+                            <Input label="VIN / Chassis" name="vin" placeholder="Optional" />
+                        </div>
+                        <Input label="Make & Model" name="model" required placeholder="Toyota Corolla" />
+                        
+                        <div className="h-px bg-slate-700/30 my-6"></div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                            <Input label="Owner Name" name="owner" required />
+                            <Input label="Contact Phone" name="phone" required type="tel" />
+                        </div>
+                        <Input label="Arrival Mileage" name="mileage" type="number" required />
+
+                        <div className="h-px bg-slate-700/30 my-6"></div>
+
+                        <div className="mb-6">
+                            <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Assign Technician (Optional)</label>
+                            <select name="technician" className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm text-slate-200">
+                                <option value="">— No Assignment —</option>
+                                {technicians.map(t => <option key={t.user_id} value={t.user_id}>{t.full_name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="flex gap-3 mt-8">
+                            <button type="button" onClick={onClose} className="flex-1 py-3 font-semibold text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+                            <button type="submit" className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold shadow-lg shadow-indigo-500/20 active:scale-95 transition-all">Create Job</button>
+                        </div>
+                    </form>
+                </div>
+            );
+        };
+
+        // NEW: Ownership History Viewer Modal
+        const OwnershipHistoryViewer = ({ vehicleId, licensePlate, onClose }) => {
+            const [history, setHistory] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                const loadHistory = async () => {
+                    const res = await callDB('db-query', {
+                        sql: "SELECT * FROM ownership_history WHERE vehicle_id = ? ORDER BY transfer_date DESC",
+                        params: [vehicleId]
+                    });
+                    if (res.success) setHistory(res.data);
+                    setLoading(false);
+                };
+                loadHistory();
+            }, [vehicleId]);
+
+            return (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+                    <div className="glass-dark rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-auto border border-slate-700/50">
+                        <div className="sticky top-0 glass-dark border-b border-slate-700/50 flex justify-between items-center p-6">
+                            <div>
+                                <h2 className="text-2xl font-bold text-white">{licensePlate}</h2>
+                                <p className="text-slate-400 text-xs mt-1">Ownership History</p>
+                            </div>
+                            <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-2xl">✕</button>
+                        </div>
+
+                        <div className="p-6">
+                            {loading ? (
+                                <p className="text-slate-400 text-sm">Loading...</p>
+                            ) : history.length === 0 ? (
+                                <p className="text-slate-400 text-sm">No ownership transfers recorded.</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {history.map((entry, idx) => (
+                                        <div key={entry.history_id} className="bg-slate-800/30 p-5 rounded-lg border border-slate-700/50">
+                                            <div className="flex justify-between items-start mb-3">
+                                                <div className="flex-1">
+                                                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Transfer #{idx + 1}</p>
+                                                    <p className="text-slate-400 text-sm mt-1">{formatDateSL(entry.transfer_date)}</p>
+                                                </div>
+                                                <span className="bg-indigo-600/30 text-indigo-300 px-3 py-1 rounded-full text-xs font-semibold border border-indigo-500/30">Owner Change</span>
+                                            </div>
+                                            <div className="space-y-2 text-sm">
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-slate-500">Previous Owner</span>
+                                                    <span className="font-semibold text-slate-200">{entry.old_owner}</span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-slate-500">New Owner</span>
+                                                    <span className="font-semibold text-emerald-400">{entry.new_owner}</span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-slate-500">Mileage at Transfer</span>
+                                                    <span className="font-mono text-slate-300">{entry.mileage_at_transfer?.toLocaleString() || '-'} KM</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const JobDetail = ({ jobId, onBack, onError }) => {
+            const [data, setData] = useState(null);
+            const [tasks, setTasks] = useState([]);
+            const [parts, setParts] = useState([]);
+            const [inventory, setInventory] = useState([]);
+            const [isPrint, setIsPrint] = useState(false);
+            const [showOwnershipHistory, setShowOwnershipHistory] = useState(false);
+            const [isComputing, setIsComputing] = useState(false);
+
+            const load = async () => {
+                const j = await callDB('db-query', { sql: "SELECT j.*, v.* FROM jobs j JOIN vehicles v ON j.vehicle_id = v.vehicle_id WHERE j.job_id = ?", params: [jobId] });
+                const t = await callDB('db-query', { sql: "SELECT * FROM job_tasks WHERE job_id = ?", params: [jobId] });
+                const p = await callDB('db-query', { sql: "SELECT jp.*, i.part_name, i.part_number FROM job_parts jp JOIN inventory i ON jp.part_id = i.part_id WHERE jp.job_id = ?", params: [jobId] });
+                const inv = await callDB('db-query', { sql: "SELECT * FROM inventory WHERE total_quantity > 0" });
+
+                if (j.success) setData(j.data[0]);
+                if (t.success) setTasks(t.data);
+                if (p.success) setParts(p.data);
+                if (inv.success) setInventory(inv.data);
+            };
+
+            useEffect(() => { load(); }, [jobId]);
+
+            const addTask = async (e) => {
+                if (e.key === 'Enter' && e.target.value.trim()) {
+                    await callDB('db-run', { sql: "INSERT INTO job_tasks (job_id, description) VALUES (?, ?)", params: [jobId, e.target.value] });
+                    e.target.value = "";
+                    load();
+                }
+            };
+
+            const addPart = async (id) => {
+                if (!id) return;
+                const item = inventory.find(x => x.part_id == id);
+                
+                // CRITICAL FIX: Check if part already exists in job - increment qty instead of duplicate rows
+                const existing = parts.find(p => p.part_id == id);
+                
+                if (existing) {
+                    // Part already added - increment quantity
+                    await callDB('db-run', {
+                        sql: "UPDATE job_parts SET qty = qty + 1 WHERE id = ?",
+                        params: [existing.id]
+                    });
+                } else {
+                    // New part - add with qty=1
+                    await callDB('db-run', { 
+                        sql: "INSERT INTO job_parts (job_id, part_id, qty, price_at_sale, cost_at_sale) VALUES (?, ?, 1, ?, ?)", 
+                        params: [jobId, id, item.retail_price, item.avg_cost] 
+                    });
+                }
+                
+                // Deduct stock by 1
+                await callDB('db-run', { sql: "UPDATE inventory SET total_quantity = total_quantity - 1 WHERE part_id = ?", params: [id] });
+                load();
+            };
+
+            const removePart = async (item) => {
+                // RESTOCK LOGIC
+                await callDB('db-run', { sql: "DELETE FROM job_parts WHERE id = ?", params: [item.id] });
+                await callDB('db-run', { sql: "UPDATE inventory SET total_quantity = total_quantity + ? WHERE part_id = ?", params: [item.qty, item.part_id] });
+                load();
+            };
+
+            const completeJob = async () => {
+                const mileageOut = document.getElementById('mileage_out').value;
+                const laborHours = document.getElementById('labor_hours').value;
+                
+                if (!mileageOut) return onError?.("Missing Data", "Please enter exit mileage") || alert("Please enter exit mileage");
+                if (mileageOut < data.mileage_in) return onError?.("Invalid Mileage", "Exit mileage cannot be less than entry mileage") || alert("Exit mileage cannot be less than entry mileage");
+                if (!laborHours || laborHours <= 0) return onError?.("Missing Labor Hours", "Please enter labor hours worked") || alert("Please enter labor hours worked");
+                
+                setIsComputing(true);
+                try {
+                    // 1. Record labor charges if hours were entered (CRITICAL FIX - was being collected but never saved)
+                    if (laborHours && data.technician_id) {
+                        // Get technician hourly rate
+                        const techRes = await callDB('db-query', { 
+                            sql: "SELECT hourly_rate FROM users WHERE user_id = ?", 
+                            params: [data.technician_id] 
+                        });
+                        
+                        if (techRes.success && techRes.data && techRes.data.length > 0) {
+                            const hourlyRate = techRes.data[0].hourly_rate || 0;
+                            const laborRes = await callDB('record-labor', {
+                                jobId: jobId,
+                                technicianId: data.technician_id,
+                                hoursWorked: parseFloat(laborHours),
+                                hourlyRate: parseFloat(hourlyRate)
+                            });
+                            
+                            if (!laborRes.success) {
+                                console.warn("Labor recording warning:", laborRes.error);
+                                // Don't block job completion on labor failure
+                            }
+                        }
+                    }
+
+                    // 2. Calculate total: parts + labor (with VAT)
+                    const partsTotal = parts.reduce((acc, p) => acc + (p.price_at_sale * p.qty), 0);
+                    const laborCost = laborHours && data.technician_id ? 
+                        (await callDB('db-query', { sql: "SELECT hourly_rate FROM users WHERE user_id = ?", params: [data.technician_id] })).data?.[0]?.hourly_rate * laborHours || 0 
+                        : 0;
+                    const subtotal = partsTotal + laborCost;
+                    const vat = subtotal * 0.08; // 8% VAT
+                    const total = subtotal + vat;
+
+                    // 3. Update job with completion details
+                    const updateRes = await callDB('db-run', { 
+                        sql: "UPDATE jobs SET status='completed', mileage_out=?, labor_hours=?, labor_cost=?, total_price=?, completion_date=CURRENT_TIMESTAMP WHERE job_id=?", 
+                        params: [mileageOut, parseFloat(laborHours), laborCost, total, jobId] 
+                    });
+                    
+                    if (!updateRes.success) {
+                        throw new Error(updateRes.error);
+                    }
+                    
+                    alert("✓ Job completed successfully!");
+                    onBack();
+                } catch (error) {
+                    console.error("Completion error:", error);
+                    onError?.("Job Completion Failed", error.message) || alert("Error completing job: " + error.message);
+                } finally {
+                    setIsComputing(false);
+                }
+            };
+
+            const toggleTask = async (taskId, isCompleted) => {
+                await callDB('db-run', { 
+                    sql: "UPDATE job_tasks SET is_completed = ? WHERE task_id = ?", 
+                    params: [isCompleted ? 1 : 0, taskId] 
+                });
+                load();
+            };
+
+            if (!data) return <div className="p-10 text-slate-400 font-bold italic">Loading Job Record...</div>;
+
+            if (isPrint) return <PrintView job={data} tasks={tasks} parts={parts} onBack={() => setIsPrint(false)} />;
+            if (showOwnershipHistory) return <OwnershipHistoryViewer vehicleId={data.vehicle_id} licensePlate={data.license_plate} onClose={() => setShowOwnershipHistory(false)} />;
+
+            return (
+                <div className="animate-in slide-in-from-right duration-500">
+                    <header className="flex justify-between items-center mb-10 no-print">
+                        <button onClick={onBack} className="text-slate-400 hover:text-slate-800 font-bold transition-colors">← Back to Dashboard</button>
+                        <div className="flex gap-4">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Status:</span>
+                                <select 
+                                    value={data.status || 'pending'} 
+                                    onChange={async (e) => {
+                                        const res = await callDB('update-job-status', { jobId: jobId, newStatus: e.target.value });
+                                        if (res.success) {
+                                            load();
+                                        } else {
+                                            alert("Cannot change status: " + res.error);
+                                        }
+                                    }}
+                                    className="bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                >
+                                    <option value="pending">Pending</option>
+                                    <option value="in-progress">In Progress</option>
+                                    <option value="waiting">Waiting for Parts</option>
+                                    <option value="completed">Completed</option>
+                                </select>
+                            </div>
+                            <button onClick={() => setIsPrint(true)} className="bg-slate-200 text-slate-700 px-6 py-3 rounded-xl font-bold hover:bg-slate-300">Invoice Preview</button>
+                            {data.status !== 'completed' && (
+                                <button onClick={completeJob} disabled={isComputing} className="bg-green-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-green-100 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                                    {isComputing ? (
+                                        <>
+                                            <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                                            Processing...
+                                        </>
+                                    ) : (
+                                        "Mark as Complete"
+                                    )}
+                                </button>
+                            )}
+                        </div>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+                        {/* LEFT: Management */}
+                        <div className="lg:col-span-2 space-y-8">
+                            <section className="bg-white p-10 rounded-[40px] shadow-sm border border-slate-100">
+                                <h3 className="text-lg font-black mb-8 flex items-center"><span className="mr-3">📋</span> Service Checklist</h3>
+                                <div className="space-y-3">
+                                    {tasks.map(t => (
+                                        <div key={t.task_id} onClick={() => toggleTask(t.task_id, !t.is_completed)} className={`p-4 rounded-2xl flex justify-between items-center border transition-all cursor-pointer hover:shadow-md ${t.is_completed ? 'bg-green-50/50 border-green-100 text-green-700' : 'bg-slate-50 border-slate-100 text-slate-700 hover:border-green-300'}`}>
+                                            <span className={t.is_completed ? 'line-through opacity-50 font-bold' : 'font-bold'}>{t.description}</span>
+                                            {t.is_completed ? <span className="text-[10px] font-black uppercase tracking-widest">✓ Completed</span> : <span className="text-[10px] font-black uppercase text-slate-300 tracking-widest">○ Pending</span>}
+                                        </div>
+                                    ))}
+                                    <input onKeyDown={addTask} placeholder="+ Type new task and press Enter..." className="w-full p-5 bg-slate-50 border-2 border-dashed border-slate-200 rounded-3xl outline-none focus:border-blue-400 focus:bg-white transition-all text-sm" />
+                                </div>
+                            </section>
+
+                            <section className="bg-white p-10 rounded-[40px] shadow-sm border border-slate-100">
+                                <div className="flex justify-between items-center mb-8">
+                                    <h3 className="text-lg font-black flex items-center"><span className="mr-3">📦</span> Parts Installed</h3>
+                                    <select onChange={e => addPart(e.target.value)} className="bg-slate-50 p-3 rounded-xl text-xs font-bold border-none outline-none ring-1 ring-slate-100 focus:ring-blue-500">
+                                        <option value="">+ Add Part</option>
+                                        {inventory.map(i => <option key={i.part_id} value={i.part_id}>{i.part_name} ({formatLKR(i.retail_price)})</option>)}
+                                    </select>
+                                </div>
+                                <div className="space-y-3">
+                                    {parts.map(p => (
+                                        <div key={p.id} className="flex justify-between items-center p-5 bg-blue-50/50 rounded-2xl border border-blue-100 group">
+                                            <div>
+                                                <p className="font-bold text-blue-900">{p.part_name}</p>
+                                                <p className="text-[10px] font-mono text-blue-400">UNIT PRICE: {formatLKR(p.price_at_sale)}</p>
+                                            </div>
+                                            <div className="flex items-center gap-6">
+                                                <span className="font-black text-blue-800">{formatLKR(p.price_at_sale * p.qty)}</span>
+                                                <button onClick={() => removePart(p)} className="text-red-400 hover:text-red-600 font-black text-xs uppercase tracking-tighter hidden group-hover:block">Remove</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {parts.length === 0 && <p className="text-center py-6 text-slate-300 text-sm italic">No parts added to this job yet.</p>}
+                                </div>
+                            </section>
+                        </div>
+
+                        {/* RIGHT: Info Sidebar */}
+                        <div className="space-y-8">
+                            <section className="bg-slate-900 text-white p-10 rounded-[40px] shadow-2xl relative overflow-hidden">
+                                <div className="absolute top-0 right-0 p-8 opacity-10 text-6xl">🚗</div>
+                                <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Vehicle Details</p>
+                                <h2 className="text-3xl font-black mb-1 tracking-tight">{data.license_plate}</h2>
+                                <p className="text-slate-400 font-bold text-sm mb-10">{data.make_model}</p>
+                                
+                                <div className="space-y-6 text-sm">
+                                    <div className="flex justify-between border-b border-slate-800 pb-3">
+                                        <span className="text-slate-500">Current Owner</span>
+                                        <span className="font-black">{data.current_owner}</span>
+                                    </div>
+                                    <div className="flex justify-between border-b border-slate-800 pb-3">
+                                        <span className="text-slate-500">Contact</span>
+                                        <span className="font-black">{data.contact_number}</span>
+                                    </div>
+                                    <div className="flex justify-between border-b border-slate-800 pb-3">
+                                        <span className="text-slate-500">Entry Mileage</span>
+                                        <span className="font-black">{data.mileage_in.toLocaleString()} KM</span>
+                                    </div>
+                                    {data.technician_id && (
+                                        <div className="flex justify-between border-b border-slate-800 pb-3">
+                                            <span className="text-slate-500">Assigned Tech</span>
+                                            <span className="font-black text-blue-400">ID: {data.technician_id}</span>
+                                        </div>
+                                    )}
+                                    <div className="flex gap-3 border-b border-slate-800 pb-3">
+                                        <div className="flex-1">
+                                            <p className="text-slate-500 text-xs mb-1">Exit Mileage</p>
+                                            <input type="number" id="mileage_out" defaultValue={data.mileage_out || ''} placeholder="0" className="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg text-white font-black text-sm outline-none focus:border-blue-500" />
+                                        </div>
+                                        <div className="flex-1">
+                                            <p className="text-slate-500 text-xs mb-1">Service Hours</p>
+                                            <input type="number" id="labor_hours" step="0.5" placeholder="0" className="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg text-white font-black text-sm outline-none focus:border-blue-500" />
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-500">Job Opened</span>
+                                        <span className="font-black">{formatDateSL(data.created_at)}</span>
+                                    </div>
+                                    <button onClick={() => setShowOwnershipHistory(true)} className="mt-6 w-full bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg font-bold text-sm uppercase tracking-widest transition-colors">
+                                        📋 View Ownership History
+                                    </button>
+                                </div>
+                            </section>
+
+                            <section className="bg-white p-8 rounded-[40px] shadow-sm border border-slate-100">
+                                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Repair Summary</h4>
+                                <div className="space-y-4">
+                                    <div className="flex justify-between items-center text-sm font-bold">
+                                        <span className="text-slate-400">Parts Total</span>
+                                        <span>{formatLKR(parts.reduce((a,b)=>a+(b.price_at_sale*b.qty),0))}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-sm font-bold">
+                                        <span className="text-slate-400">Labor Estimate</span>
+                                        {/* CRITICAL FIX: Calculate labor cost from hours input and technician hourly rate */}
+                                        <span>
+                                            {(() => {
+                                                const laborHours = parseFloat(document.getElementById('labor_hours')?.value) || 0;
+                                                const techRate = data.technician_id ? 500 : 0; // Default rate, ideally fetch from DB
+                                                const laborCost = laborHours * techRate;
+                                                return laborCost > 0 ? `රු.${laborCost.toFixed(2)}` : '-';
+                                            })()}
+                                        </span>
+                                    </div>
+                                    <div className="pt-4 border-t border-dashed border-slate-100 flex justify-between items-center text-xl font-black text-slate-800">
+                                        <span>Total (incl. 8% VAT)</span>
+                                        <span className="text-blue-600">
+                                            {(() => {
+                                                const partsTotal = parts.reduce((a,b)=>a+(b.price_at_sale*b.qty),0);
+                                                const laborHours = parseFloat(document.getElementById('labor_hours')?.value) || 0;
+                                                const techRate = data.technician_id ? 500 : 0;
+                                                const laborCost = laborHours * techRate;
+                                                const subtotal = partsTotal + laborCost;
+                                                const total = subtotal * 1.08; // 8% VAT
+                                                return `රු.${total.toFixed(2)}`;
+                                            })()}
+                                        </span>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const PrintView = ({ job, tasks, parts, onBack }) => {
+            return (
+                <div className="bg-white p-12 min-h-screen animate-in fade-in duration-300 shadow-2xl rounded-3xl">
+                    <div className="flex justify-between items-center mb-10 no-print">
+                        <button onClick={onBack} className="text-slate-400 font-bold">← Back to Edit</button>
+                        <button onClick={() => window.print()} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-100">Print Job Card / Invoice</button>
+                    </div>
+
+                    <div className="max-w-4xl mx-auto border-t-8 border-slate-900 pt-10">
+                        <div className="flex justify-between mb-16">
+                            <div>
+                                <h1 className="text-4xl font-black italic tracking-tighter text-slate-900">AUTO WORKSHOP PRO</h1>
+                                <p className="text-xs text-slate-400 uppercase font-bold tracking-widest mt-1">Certified Repair Center</p>
+                            </div>
+                            <div className="text-right">
+                                <h2 className="text-xl font-black mb-1">INVOICE #{job.job_id}</h2>
+                                <p className="text-sm font-bold text-slate-400">{new Date().toLocaleDateString()}</p>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-20 mb-16 pb-16 border-b border-slate-100">
+                            <div>
+                                <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-3">Customer Details</p>
+                                <p className="text-xl font-black text-slate-800 mb-1">{job.current_owner}</p>
+                                <p className="text-slate-500 font-bold">{job.contact_number}</p>
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-3">Vehicle Info</p>
+                                <p className="text-xl font-black text-slate-800 mb-1">{job.license_plate}</p>
+                                <p className="text-slate-500 font-bold">{job.make_model} | {job.mileage_in} KM</p>
+                            </div>
+                        </div>
+
+                        <div className="mb-16">
+                            <h3 className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-6">Work Performed</h3>
+                            <div className="space-y-4">
+                                {tasks.map(t => (
+                                    <div key={t.task_id} className="flex justify-between items-center py-2 border-b border-slate-50">
+                                        <span className="font-bold text-slate-700">{t.description}</span>
+                                        <span className="text-xs font-black text-slate-300 uppercase">Performed</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mb-20">
+                            <h3 className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-6">Parts & Materials</h3>
+                            <table className="w-full text-left">
+                                <thead className="border-b-2 border-slate-900">
+                                    <tr className="text-[10px] font-black uppercase text-slate-400">
+                                        <th className="py-4">Description</th>
+                                        <th className="py-4 text-center">Qty</th>
+                                        <th className="py-4 text-right">Unit Price</th>
+                                        <th className="py-4 text-right">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {parts.map(p => (
+                                        <tr key={p.id} className="border-b border-slate-50 text-sm">
+                                            <td className="py-4 font-bold text-slate-700">{p.part_name}</td>
+                                            <td className="py-4 text-center">{p.qty}</td>
+                                            <td className="py-4 text-right text-slate-400">{formatLKR(p.price_at_sale)}</td>
+                                            <td className="py-4 text-right font-black text-slate-800">{formatLKR(p.qty * p.price_at_sale)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="flex justify-end pt-10 border-t-4 border-slate-900">
+                            <div className="w-80 space-y-3">
+                                <div className="flex justify-between text-sm font-bold text-slate-400">
+                                    <span>SUBTOTAL</span>
+                                    <span>{formatLKR(parts.reduce((a,b)=>a+(b.qty*b.price_at_sale),0))}</span>
+                                </div>
+                                <div className="flex justify-between text-sm font-bold text-slate-400">
+                                    <span>VAT (8%)</span>
+                                    <span>{formatLKR(parts.reduce((a,b)=>a+(b.qty*b.price_at_sale),0) * SL_CONFIG.VAT_RATE)}</span>
+                                </div>
+                                <div className="flex justify-between text-3xl font-black text-slate-900 pt-3">
+                                    <span>TOTAL</span>
+                                    <span>{formatLKR(parts.reduce((a,b)=>a+(b.qty*b.price_at_sale),0) * (1 + SL_CONFIG.VAT_RATE))}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-40 text-center border-t border-slate-100 pt-10">
+                            <p className="text-slate-300 text-[10px] font-bold tracking-[.3em] uppercase mb-4">Quality Guarantee Verified</p>
+                            <p className="text-xs text-slate-400 font-medium">Thank you for your business. Please keep this invoice for warranty purposes.</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Inventory = ({ onError }) => {
+            const [items, setItems] = useState([]);
+            const [showAdd, setShowAdd] = useState(false);
+            const [search, setSearch] = useState("");
+
+            const load = async () => {
+                const res = await callDB('db-query', { sql: "SELECT * FROM inventory" });
+                if (res.success) setItems(res.data);
+            };
+
+            useEffect(() => { load(); }, []);
+
+            const filteredItems = useMemo(() => {
+                return items.filter(i => 
+                    i.part_name.toLowerCase().includes(search.toLowerCase()) || 
+                    i.part_number.toLowerCase().includes(search.toLowerCase())
+                );
+            }, [items, search]);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const d = Object.fromEntries(formData.entries());
+
+                // --- DATA VALIDATION ---
+                if (parseFloat(d.cost) < 0 || parseFloat(d.price) < 0) return alert("Costs/Prices cannot be negative.");
+
+                // Check if part number exists to update (Weighted Average) or insert
+                const existing = items.find(x => x.part_number === d.number);
+
+                if (existing) {
+                    // WEIGHTED AVERAGE UPDATE
+                    const qtyNew = parseInt(d.qty);
+                    const costNew = parseFloat(d.cost);
+                    const updatedRes = await ipcRenderer.invoke('inventory-add-stock', {
+                        partId: existing.part_id,
+                        qty: qtyNew,
+                        cost: costNew
+                    });
+                    
+                    // Also update the retail price if it changed in the form
+                    await callDB('db-run', {
+                        sql: "UPDATE inventory SET retail_price = ?, part_name = ?, category = ? WHERE part_id = ?",
+                        params: [d.price, d.name, d.cat, existing.part_id]
+                    });
+
+                    if (updatedRes.success) { setShowAdd(false); load(); }
+                } else {
+                    // NEW PART INSERT
+                    const res = await callDB('db-run', {
+                        sql: "INSERT INTO inventory (part_name, part_number, total_quantity, avg_cost, retail_price, category) VALUES (?, ?, ?, ?, ?, ?)",
+                        params: [d.name, d.number, d.qty, d.cost, d.price, d.cat]
+                    });
+                    if (res.success) { setShowAdd(false); load(); }
+                }
+            };
+
+            return (
+                <div className="animate-in fade-in duration-500">
+                    <div className="flex justify-between items-center mb-10">
+                        <div>
+                            <h1 className="text-3xl font-black text-slate-800 tracking-tight">Master Inventory</h1>
+                            <p className="text-slate-400 font-bold text-sm uppercase">Stock & Cost management</p>
+                        </div>
+                        <button onClick={() => setShowAdd(true)} className="bg-slate-900 hover:bg-black text-white px-8 py-4 rounded-2xl font-bold shadow-xl shadow-slate-200 active:scale-95 transition-all">Receive Stock</button>
+                    </div>
+
+                    <div className="mb-8 relative">
+                        <input 
+                            placeholder="Search parts by name or #..." 
+                            className="w-full p-5 bg-white border border-slate-100 rounded-3xl shadow-sm outline-none focus:ring-2 ring-blue-500 font-bold"
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                        />
+                        <span className="absolute right-6 top-5 text-2xl opacity-10">🔍</span>
+                    </div>
+
+                    <div className="bg-white rounded-[40px] shadow-sm border border-slate-100 overflow-hidden">
+                        <table className="w-full text-left">
+                            <thead className="bg-slate-50 border-b border-slate-100">
+                                <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                    <th className="p-8">Description</th>
+                                    <th>Category</th>
+                                    <th>Quantity</th>
+                                    <th>Unit Cost (WAC)</th>
+                                    <th>Selling Price</th>
+                                    <th className="pr-8 text-right">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {filteredItems.map(item => (
+                                    <tr key={item.part_id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="p-8">
+                                            <div className="font-bold text-slate-800">{item.part_name}</div>
+                                            <div className="text-[10px] text-slate-300 font-mono tracking-wider">{item.part_number}</div>
+                                        </td>
+                                        <td className="text-xs font-bold text-slate-400 uppercase tracking-tight">{item.category || 'Uncategorized'}</td>
+                                        <td className="font-black text-slate-800">{item.total_quantity}</td>
+                                        <td className="font-mono text-xs text-slate-400">රු.{item.avg_cost.toFixed(2)}</td>
+                                        <td className="font-black text-blue-600">රු.{item.retail_price.toFixed(2)}</td>
+                                        <td className="pr-8 text-right">
+                                            {item.total_quantity <= item.min_threshold ? 
+                                                <span className="bg-red-50 text-red-600 px-3 py-1 rounded-full text-[9px] font-black uppercase">Low Stock</span> :
+                                                <span className="bg-green-50 text-green-600 px-3 py-1 rounded-full text-[9px] font-black uppercase">Available</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {showAdd && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-6 z-50">
+                            <form onSubmit={handleSubmit} className="bg-white p-10 rounded-[40px] shadow-2xl w-full max-w-xl animate-in zoom-in duration-200">
+                                <h2 className="text-2xl font-black mb-6">Stock Inward / New Part</h2>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <Input label="Part Name" name="name" required placeholder="Oil Filter" />
+                                    <Input label="Part Number / SKU" name="number" required placeholder="SKU-8822" />
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 mt-2">
+                                    <Input label="Category" name="cat" placeholder="Ex: Filters" />
+                                    <Input label="Quantity Received" name="qty" type="number" required defaultValue="1" />
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 mt-2">
+                                    <Input label="Cost Price (Unit)" name="cost" type="number" step="0.01" required />
+                                    <Input label="Selling Price (Unit)" name="price" type="number" step="0.01" required />
+                                </div>
+                                <div className="flex gap-4 mt-10">
+                                    <button type="button" onClick={() => setShowAdd(false)} className="flex-1 py-4 font-bold text-slate-400">Cancel</button>
+                                    <button type="submit" className="flex-1 py-4 bg-slate-900 text-white rounded-2xl font-bold shadow-xl shadow-slate-200">Process Stock</button>
+                                </div>
+                            </form>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const Reports = ({ onError }) => {
+            const [data, setData] = useState([]);
+            
+            const load = async () => {
+                const res = await callDB('db-query', { sql: "SELECT j.*, v.make_model, v.license_plate FROM jobs j JOIN vehicles v ON j.vehicle_id = v.vehicle_id WHERE j.status = 'completed' ORDER BY j.created_at DESC" });
+                if (res.success) setData(res.data);
+            };
+
+            useEffect(() => { load(); }, []);
+
+            const exportCSV = () => {
+                const header = ["Date", "Job ID", "Vehicle", "Plate", "Mileage", "Revenue"];
+                const rows = data.map(j => [new Date(j.created_at).toLocaleDateString(), j.job_id, j.make_model, j.license_plate, j.mileage_in, j.total_price]);
+                const csvContent = "data:text/csv;charset=utf-8," + [header, ...rows].map(e => e.join(",")).join("\n");
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `workshop_financial_report_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const totalRev = data.reduce((a,b) => a + b.total_price, 0);
+
+            return (
+                <div className="animate-in fade-in duration-500">
+                    <div className="flex justify-between items-center mb-10">
+                        <div>
+                            <h1 className="text-3xl font-black text-slate-800 tracking-tight">Business Reports</h1>
+                            <p className="text-slate-400 font-bold text-sm uppercase">Financial performance</p>
+                        </div>
+                        <button onClick={exportCSV} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-bold shadow-xl shadow-emerald-200 active:scale-95 transition-all">Excel Export (CSV)</button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
+                        <div className="bg-white p-8 rounded-[40px] shadow-sm border-t-8 border-blue-500">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Revenue</p>
+                            <p className="text-4xl font-black text-slate-800">රු.{totalRev.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                        </div>
+                        <div className="bg-white p-8 rounded-[40px] shadow-sm border-t-8 border-emerald-500">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Jobs Completed</p>
+                            <p className="text-4xl font-black text-slate-800">{data.length}</p>
+                        </div>
+                        <div className="bg-white p-8 rounded-[40px] shadow-sm border-t-8 border-slate-900">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Avg. Ticket Value</p>
+                            <p className="text-4xl font-black text-slate-800">රු.{data.length ? (totalRev/data.length).toFixed(2) : '0.00'}</p>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-[40px] shadow-sm border border-slate-100 overflow-hidden">
+                        <table className="w-full text-left">
+                            <thead className="bg-slate-50 border-b">
+                                <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                    <th className="p-8">Date</th>
+                                    <th>Vehicle & Job #</th>
+                                    <th className="text-right pr-8">Final Revenue</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {data.map(j => (
+                                    <tr key={j.job_id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="p-8 font-bold text-slate-600">{new Date(j.created_at).toLocaleDateString()}</td>
+                                        <td>
+                                            <div className="font-bold text-slate-800">{j.make_model} ({j.license_plate})</div>
+                                            <div className="text-[10px] text-slate-300 font-mono tracking-widest">JOB ID: #{j.job_id}</div>
+                                        </td>
+                                        <td className="text-right pr-8 font-black text-emerald-600 text-lg">රු.{j.total_price.toFixed(2)}</td>
+                                    </tr>
+                                ))}
+                                {data.length === 0 && <tr><td colSpan="3" className="p-10 text-center italic text-slate-400">No completed jobs found for reporting.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- TECHNICIAN MODULES ---
+
+        const TechLogin = ({ onLogin }) => {
+            const [pin, setPin] = useState("");
+            const handleNum = (n) => { if(pin.length < 4) setPin(p => p+n); };
+            const check = async () => {
+                const res = await callDB('db-query', { sql: "SELECT * FROM users WHERE pin = ? AND role = 'technician'", params: [pin] });
+                if (res.success && res.data.length > 0) onLogin(res.data[0]);
+                else { alert("Invalid Access PIN"); setPin(""); }
+            };
+            return (
+                <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6">
+                    <h1 className="text-2xl font-black mb-10 tracking-widest uppercase italic text-blue-400">TECHNICIAN ACCESS</h1>
+                    <div className="flex gap-4 mb-14">
+                        {[0,1,2,3].map(i => (
+                            <div key={i} className={`w-14 h-20 rounded-2xl border-4 flex items-center justify-center text-4xl font-black ${pin[i] ? 'border-blue-500 bg-blue-500/20 text-blue-400 shadow-lg' : 'border-slate-800 text-slate-800'}`}>
+                                {pin[i] ? '•' : ''}
+                            </div>
+                        ))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-6 max-w-sm w-full">
+                        {[1,2,3,4,5,6,7,8,9].map(n => (
+                            <button key={n} onClick={()=>handleNum(n)} className="w-full aspect-square bg-slate-800 rounded-3xl text-3xl font-black active:scale-90 active:bg-blue-600 transition-all border-b-4 border-slate-950">{n}</button>
+                        ))}
+                        <button onClick={()=>setPin("")} className="w-full aspect-square text-slate-500 font-bold uppercase text-xs">Clear</button>
+                        <button onClick={()=>handleNum(0)} className="w-full aspect-square bg-slate-800 rounded-3xl text-3xl font-black border-b-4 border-slate-950">0</button>
+                        <button onClick={check} className="w-full aspect-square bg-blue-600 rounded-3xl text-3xl font-black border-b-4 border-blue-800 shadow-xl shadow-blue-500/20">✓</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const TechDash = ({ user, onLogout }) => {
+            const [jobs, setJobs] = useState([]);
+            const [selected, setSelected] = useState(null);
+
+            const load = async () => {
+                // CRITICAL FIX: Use get-tech-jobs to filter by technician_id instead of getting all jobs
+                const res = await callDB('get-tech-jobs', { technicianId: user.user_id });
+                if (res.success) setJobs(res.data);
+            };
+
+            useEffect(() => { load(); }, []);
+
+            if (selected) return <TechChecklist jobId={selected} onBack={() => { setSelected(null); load(); }} />;
+
+            return (
+                <div className="min-h-screen bg-slate-50 p-6 animate-in fade-in duration-500">
+                    <header className="flex justify-between items-center mb-10">
+                        <div>
+                            <h1 className="text-2xl font-black text-slate-800">Hello, {user.full_name.split(' ')[0]}</h1>
+                            <p className="text-slate-400 font-bold text-xs uppercase tracking-widest">Workshop Floor</p>
+                        </div>
+                        <button onClick={onLogout} className="bg-slate-200 text-slate-500 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-300">Exit Session</button>
+                    </header>
+                    <div className="space-y-4">
+                        {jobs.map(j => (
+                            <button key={j.job_id} onClick={() => setSelected(j.job_id)} className="w-full bg-white p-8 rounded-[40px] shadow-sm border-l-[12px] border-blue-500 flex justify-between items-center active:scale-95 transition-all text-left group">
+                                <div>
+                                    <p className="text-2xl font-black text-slate-800 group-hover:text-blue-600 transition-colors">{j.license_plate}</p>
+                                    <p className="text-slate-400 font-bold text-sm">{j.make_model}</p>
+                                </div>
+                                <div className="text-right">
+                                    <span className="bg-blue-100 text-blue-600 px-4 py-2 rounded-full font-black text-[10px] uppercase tracking-widest">{j.status}</span>
+                                    <p className="text-[10px] text-slate-300 font-mono mt-2">JOB #{j.job_id}</p>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const TechChecklist = ({ jobId, onBack }) => {
+            const [tasks, setTasks] = useState([]);
+            const [jobInfo, setJobInfo] = useState(null);
+
+            const load = async () => {
+                const jRes = await callDB('db-query', { sql: "SELECT v.license_plate, v.make_model FROM jobs j JOIN vehicles v ON j.vehicle_id = v.vehicle_id WHERE j.job_id = ?", params: [jobId] });
+                const tRes = await callDB('db-query', { sql: "SELECT * FROM job_tasks WHERE job_id = ?", params: [jobId] });
+                setJobInfo(jRes.data[0]);
+                setTasks(tRes.data || []);
+            };
+
+            useEffect(() => { load(); }, [jobId]);
+
+            const toggle = async (id, current) => {
+                await callDB('db-run', { sql: "UPDATE job_tasks SET is_completed = ? WHERE task_id = ?", params: [!current, id] });
+                load();
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-900 p-8 text-white animate-in slide-in-from-bottom duration-500">
+                    <div className="flex justify-between items-start mb-10">
+                        <button onClick={onBack} className="text-slate-500 font-black text-sm uppercase tracking-widest hover:text-white transition-colors">← Jobs</button>
+                        <div className="text-right">
+                            <h2 className="text-3xl font-black text-blue-400 italic tracking-tighter">{jobInfo?.license_plate}</h2>
+                            <p className="text-slate-500 font-bold text-xs">{jobInfo?.make_model}</p>
+                        </div>
+                    </div>
+
+                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[.3em] mb-6">Service Requirements</h3>
+                    <div className="space-y-4">
+                        {tasks.map(t => (
+                            <div 
+                                key={t.task_id} 
+                                onClick={() => toggle(t.task_id, t.is_completed)} 
+                                className={`p-8 rounded-[36px] flex items-center justify-between border-2 transition-all active:scale-[.98] cursor-pointer ${t.is_completed ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/5' : 'bg-slate-800 border-slate-700 text-slate-200'}`}
+                            >
+                                <span className={`text-xl font-black ${t.is_completed ? 'line-through opacity-40' : ''}`}>{t.description}</span>
+                                <div className={`w-12 h-12 rounded-full border-4 flex items-center justify-center transition-all ${t.is_completed ? 'bg-emerald-500 border-emerald-500 scale-110 shadow-lg' : 'border-slate-600'}`}>
+                                    {t.is_completed && <span className="text-white text-xl font-black">✓</span>}
+                                </div>
+                            </div>
+                        ))}
+                        {tasks.length === 0 && <p className="text-center py-20 text-slate-600 italic font-bold">No tasks assigned to this job card yet.</p>}
+                    </div>
+
+                    <div className="mt-20 p-8 bg-slate-800/50 rounded-[40px] border border-slate-800 text-center">
+                        <p className="text-xs text-slate-500 font-bold mb-4">Complete all checklist items before returning to Reception.</p>
+                        <button onClick={onBack} className="bg-slate-900 px-10 py-4 rounded-2xl text-xs font-black uppercase tracking-widest text-slate-400 hover:text-white">Checkpoint Sync</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

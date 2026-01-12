@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Database
+*.db
+*.db-journal
+*.db.pre_restore_backup
+
+# Uploads (user-generated content)
+uploads/*
+!uploads/.gitkeep
+src/uploads/*
+!src/uploads/.gitkeep
+
+# Build outputs
+dist/
+out/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Environment
+.env
+.env.local
+
+# Backups
+Backups/
+
+# Large archives
+*.zip
