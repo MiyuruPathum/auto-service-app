@@ -254,8 +254,9 @@ ipcMain.handle('inventory-add-stock', async (event, { partId, quantityToAdd }) =
     });
 });
 
-// IPC Handler for Photo Upload
-ipcMain.handle('upload-photo', async (event, { fileName, base64Data }) => {
+// IPC Handler for Photo Upload with organized folder structure
+// Supports: vehicle photos (by license plate), job photos (by job ID), inventory photos, general
+ipcMain.handle('upload-photo', async (event, { fileName, base64Data, type, identifier }) => {
     return new Promise((resolve) => {
         try {
             if (!base64Data) {
@@ -263,11 +264,31 @@ ipcMain.handle('upload-photo', async (event, { fileName, base64Data }) => {
                 return;
             }
 
-            // Generate filename if not provided
+            // Determine target folder based on type
+            let targetDir = uploadsDir;
+            
+            if (type === 'vehicle' && identifier) {
+                // Vehicle photos: uploads/vehicles/ABC-1234/
+                const sanitizedPlate = identifier.replace(/[^a-z0-9-]/gi, '_').toUpperCase();
+                targetDir = path.join(uploadsDir, 'vehicles', sanitizedPlate);
+            } else if (type === 'job' && identifier) {
+                // Job photos: uploads/jobs/123/
+                targetDir = path.join(uploadsDir, 'jobs', String(identifier));
+            } else if (type === 'inventory' && identifier) {
+                // Inventory photos: uploads/inventory/
+                targetDir = path.join(uploadsDir, 'inventory');
+            }
+            
+            // Ensure target directory exists
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+            }
+
+            // Generate filename
             const timestamp = Date.now();
             const defaultName = fileName || 'photo.jpg';
-            const sanitizedName = `photo_${timestamp}_${defaultName.replace(/[^a-z0-9._-]/gi, '_')}`;
-            const filePath = path.join(uploadsDir, sanitizedName);
+            const sanitizedName = `${timestamp}_${defaultName.replace(/[^a-z0-9._-]/gi, '_')}`;
+            const filePath = path.join(targetDir, sanitizedName);
 
             // Remove data URL prefix if present
             const base64String = base64Data.replace(/^data:image\/\w+;base64,/, '');
@@ -278,7 +299,7 @@ ipcMain.handle('upload-photo', async (event, { fileName, base64Data }) => {
                     console.error("Photo Upload Error:", err.message);
                     resolve({ success: false, error: err.message });
                 } else {
-                    console.log(`Photo saved: ${sanitizedName}`);
+                    console.log(`Photo saved: ${filePath}`);
                     // Return ABSOLUTE path for proper file:// protocol display
                     resolve({ success: true, filePath: filePath });
                 }

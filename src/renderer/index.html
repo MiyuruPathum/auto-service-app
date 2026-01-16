@@ -913,7 +913,11 @@
                 try {
                     let uploadedPhotoPath = null;
                     if (photoPath && photoPath.startsWith('data:image')) {
-                        const photoRes = await callDB('upload-photo', { base64Data: photoPath });
+                        const photoRes = await callDB('upload-photo', { 
+                            base64Data: photoPath,
+                            type: 'vehicle',
+                            identifier: d.plate.toUpperCase()
+                        });
                         if (photoRes.success) uploadedPhotoPath = photoRes.filePath;
                     }
 
@@ -1692,8 +1696,10 @@
                 reader.onload = async () => {
                     const base64 = reader.result;
                     const uploadRes = await ipcRenderer.invoke('upload-photo', {
-                        fileName: `job_${jobId}_${file.name}`,
-                        base64Data: base64
+                        fileName: file.name,
+                        base64Data: base64,
+                        type: 'job',
+                        identifier: jobId
                     });
                     if (uploadRes.success) {
                         // Save to job_images table
@@ -2745,7 +2751,11 @@
                 // Upload photo if provided
                 let uploadedPhotoPath = null;
                 if (partPhotoPath && partPhotoPath.startsWith('data:image')) {
-                    const photoRes = await callDB('upload-photo', { base64Data: partPhotoPath });
+                    const photoRes = await callDB('upload-photo', { 
+                        base64Data: partPhotoPath,
+                        type: 'inventory',
+                        identifier: d.number
+                    });
                     if (photoRes.success) uploadedPhotoPath = photoRes.filePath;
                 }
 
@@ -3081,9 +3091,13 @@
                                             // Handle photo upload if new photo was selected
                                             let photoPath = editPartPhotoPath;
                                             if (editPartPhotoPath && editPartPhotoPath.startsWith('data:image')) {
-                                                const photoRes = await callDB('upload-photo', { base64Data: editPartPhotoPath });
+                                                const photoRes = await callDB('upload-photo', { 
+                                                    base64Data: editPartPhotoPath,
+                                                    type: 'inventory',
+                                                    identifier: editingPart.part_number
+                                                });
                                                 if (photoRes.success) {
-                                                    photoPath = photoRes.path;
+                                                    photoPath = photoRes.filePath;
                                                 }
                                             }
                                             
