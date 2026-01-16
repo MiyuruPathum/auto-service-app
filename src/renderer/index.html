@@ -726,6 +726,7 @@
             const [plateValue, setPlateValue] = useState('');
             const [existingVehicle, setExistingVehicle] = useState(null);
             const [formData, setFormData] = useState({ owner: '', phone: '', vin: '', model: '', year: '', mileage: '' });
+            const [validationError, setValidationError] = useState('');
             const fileInput = useRef();
             const modalRef = useRef();
             const modelDropdownRef = useRef();
@@ -800,6 +801,7 @@
 
             // License plate lookup - auto-fill if vehicle exists
             const handlePlateChange = async (value) => {
+                setValidationError(''); // Clear error when user types
                 let upperPlate = value.toUpperCase();
                 
                 // Auto-add "-" after 3 letters or 3 numbers (not for 2-char prefixes)
@@ -863,6 +865,7 @@
                 setModelFilter(filterValue);
                 setFormData(prev => ({ ...prev, model: value }));
                 setShowModelDropdown(filterValue.length > 0 && filteredModels.length > 0);
+                setValidationError(''); // Clear error when user types
             };
             
             const handleSelectModel = (model) => {
@@ -871,27 +874,30 @@
                 setFormData(prev => ({ ...prev, model: fullModel }));
                 setModelFilter(model);
                 setShowModelDropdown(false);
+                setValidationError(''); // Clear error when user selects
             };
 
             const handleFormChange = (field, value) => {
                 setFormData(prev => ({ ...prev, [field]: value }));
+                setValidationError(''); // Clear error when user types
             };
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
+                setValidationError(''); // Clear previous errors
                 const fd = new FormData(e.target);
                 const d = Object.fromEntries(fd.entries());
                 
-                if (!d.plate || !d.plate.trim()) return alert("License plate is required");
-                if (!d.owner || !d.owner.trim()) return alert("Owner name is required");
-                if (!d.phone || !d.phone.trim()) return alert("Contact phone is required");
-                if (!d.mileage) return alert("Arrival mileage is required");
-                if (!d.model || !d.model.trim()) return alert("Vehicle model is required");
-                if (!d.year || !d.year.trim()) return alert("Vehicle year is required");
+                if (!d.plate || !d.plate.trim()) { setValidationError('License plate is required'); return; }
+                if (!d.owner || !d.owner.trim()) { setValidationError('Owner name is required'); return; }
+                if (!d.phone || !d.phone.trim()) { setValidationError('Contact phone is required'); return; }
+                if (!d.mileage) { setValidationError('Arrival mileage is required'); return; }
+                if (!d.model || !d.model.trim()) { setValidationError('Vehicle model is required'); return; }
+                if (!d.year || !d.year.trim()) { setValidationError('Vehicle year is required'); return; }
 
-                if (!isValidSLPlate(d.plate)) return alert("Invalid license plate format.\nAccepted:\n• ABC-1234\n• GS-5025\n• 300-2330");
-                if (!isValidSLPhone(d.phone)) return alert("Invalid phone format");
-                if (parseInt(d.mileage) < 0) return alert("Mileage cannot be negative");
+                if (!isValidSLPlate(d.plate)) { setValidationError('Invalid license plate format. Accepted: ABC-1234, GS-5025, 300-2330'); return; }
+                if (!isValidSLPhone(d.phone)) { setValidationError('Invalid phone format. Use 10 digits starting with 0'); return; }
+                if (parseInt(d.mileage) < 0) { setValidationError('Mileage cannot be negative'); return; }
                 
                 // Validate Peugeot model - load from localStorage if available
                 let peugeotModelsList = ['208', '307', '308', '3008', '2008', '206', '207', '407', '508', '5008', '106', '107', '108', '306', '406', '605', '607', '806', '807', '4008', 'rcz', 'traveller'];
@@ -904,7 +910,8 @@
                 } catch (e) {}
                 const isPeugeot = peugeotModelsList.some(m => d.model.toLowerCase().includes(m.toLowerCase()));
                 if (!isPeugeot) {
-                    return alert("⚠️ This workshop services Peugeot vehicles exclusively.\n\nPlease enter a valid Peugeot model.\n\nCommon models: 208, 308, 3008, 2008, 508");
+                    setValidationError('This workshop services Peugeot vehicles exclusively. Please enter a valid Peugeot model (e.g., 208, 308, 3008)');
+                    return;
                 }
                 
                 // Concatenate model and year
@@ -989,6 +996,17 @@
                             <h2 className="text-2xl font-bold text-white">New Vehicle Intake</h2>
                             <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-200 text-2xl">✕</button>
                         </div>
+                        
+                        {/* Validation Error Display */}
+                        {validationError && (
+                            <div className="mb-4 p-3 bg-red-600/20 border border-red-500/50 rounded-lg flex items-start gap-3">
+                                <span className="text-red-400 text-lg">⚠️</span>
+                                <div className="flex-1">
+                                    <p className="text-red-300 text-sm font-medium">{validationError}</p>
+                                </div>
+                                <button type="button" onClick={() => setValidationError('')} className="text-red-400 hover:text-red-300">✕</button>
+                            </div>
+                        )}
                         
                         <div className="mb-6">
                             <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Vehicle Photo</label>
