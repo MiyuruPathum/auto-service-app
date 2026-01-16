@@ -231,6 +231,47 @@
                     setToasts(prev => prev.filter(t => t.id !== id));
                 }, 4000);
             };
+
+        // Image compression utility - resizes and compresses large images
+        const compressImage = (base64Data, maxWidth = 1920, maxHeight = 1080, quality = 0.8) => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    let { width, height } = img;
+                    
+                    // Only resize if image is larger than max dimensions
+                    if (width > maxWidth || height > maxHeight) {
+                        const ratio = Math.min(maxWidth / width, maxHeight / height);
+                        width = Math.round(width * ratio);
+                        height = Math.round(height * ratio);
+                    }
+                    
+                    // Create canvas and draw resized image
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Convert to compressed JPEG (or PNG if transparency needed)
+                    const mimeType = base64Data.includes('data:image/png') ? 'image/png' : 'image/jpeg';
+                    const compressed = canvas.toDataURL(mimeType, quality);
+                    
+                    // Log compression stats
+                    const originalSize = Math.round(base64Data.length * 0.75 / 1024); // Approximate KB
+                    const compressedSize = Math.round(compressed.length * 0.75 / 1024);
+                    console.log(`Image compressed: ${originalSize}KB → ${compressedSize}KB (${Math.round((1 - compressedSize/originalSize) * 100)}% reduction)`);
+                    
+                    resolve(compressed);
+                };
+                img.onerror = () => {
+                    // If compression fails, return original
+                    console.warn('Image compression failed, using original');
+                    resolve(base64Data);
+                };
+                img.src = base64Data;
+            });
+        };
             
             const ToastContainer = () => (
                 <div className="fixed bottom-4 right-4 space-y-2 z-50">
@@ -927,8 +968,10 @@
                 try {
                     let uploadedPhotoPath = null;
                     if (photoPath && photoPath.startsWith('data:image')) {
+                        // Compress image before upload
+                        const compressedPhoto = await compressImage(photoPath, 1920, 1080, 0.85);
                         const photoRes = await callDB('upload-photo', { 
-                            base64Data: photoPath,
+                            base64Data: compressedPhoto,
                             type: 'vehicle',
                             identifier: d.plate.toUpperCase()
                         });
@@ -1730,7 +1773,7 @@
 
             // Job image functions
             const handleJobImageUpload = async (e) => {
-                if (isLocked) {
+                if (data?.status === 'completed') {
                     showToast && showToast('Reopen job to add images', 'warning');
                     return;
                 }
@@ -1739,7 +1782,8 @@
 
                 const reader = new FileReader();
                 reader.onload = async () => {
-                    const base64 = reader.result;
+                    // Compress image before upload
+                    const base64 = await compressImage(reader.result, 1920, 1080, 0.85);
                     const uploadRes = await ipcRenderer.invoke('upload-photo', {
                         fileName: file.name,
                         base64Data: base64,
@@ -1759,21 +1803,23 @@
                     }
                 };
                 reader.readAsDataURL(file);
-                e.target.value = '';
+                if (e.target.value) e.target.value = '';
             };
 
             const deleteJobImage = async (imageId) => {
-                if (isLocked) {
+                if (data?.status === 'completed') {
                     showToast && showToast('Reopen job to delete images', 'warning');
                     return;
                 }
-                if (!confirm('Delete this image?')) return;
-                await callDB('db-run', {
+                // Delete without blocking confirm dialog
+                const res = await callDB('db-run', {
                     sql: "DELETE FROM job_images WHERE image_id = ?",
                     params: [imageId]
                 });
-                showToast && showToast('Image deleted', 'success');
-                load();
+                if (res.success) {
+                    showToast && showToast('Image deleted', 'success');
+                    load();
+                }
             };
 
             const openCarousel = (index) => {
@@ -2815,11 +2861,12 @@
                 if (!d.cost || parseFloat(d.cost) < 0) return alert("Cost is required and cannot be negative");
                 if (!d.price || parseFloat(d.price) < 0) return alert("Retail price is required and cannot be negative");
 
-                // Upload photo if provided
+                // Upload photo if provided (with compression)
                 let uploadedPhotoPath = null;
                 if (partPhotoPath && partPhotoPath.startsWith('data:image')) {
+                    const compressedPhoto = await compressImage(partPhotoPath, 1024, 1024, 0.85);
                     const photoRes = await callDB('upload-photo', { 
-                        base64Data: partPhotoPath,
+                        base64Data: compressedPhoto,
                         type: 'inventory',
                         identifier: d.number
                     });
@@ -3155,11 +3202,12 @@
                                     </button>
                                     <button 
                                         onClick={async () => {
-                                            // Handle photo upload if new photo was selected
+                                            // Handle photo upload if new photo was selected (with compression)
                                             let photoPath = editPartPhotoPath;
                                             if (editPartPhotoPath && editPartPhotoPath.startsWith('data:image')) {
+                                                const compressedPhoto = await compressImage(editPartPhotoPath, 1024, 1024, 0.85);
                                                 const photoRes = await callDB('upload-photo', { 
-                                                    base64Data: editPartPhotoPath,
+                                                    base64Data: compressedPhoto,
                                                     type: 'inventory',
                                                     identifier: editingPart.part_number
                                                 });
