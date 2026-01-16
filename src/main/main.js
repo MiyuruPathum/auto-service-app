@@ -44,6 +44,26 @@ function createWindow() {
     // Force focus to webContents when window gains focus
     mainWindow.webContents.focus();
   });
+
+  // Additional focus fix: periodically check and restore focus if needed
+  // This helps when modals close or state changes cause focus loss
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.focus();
+  });
+
+  // Handle focus restoration after dialogs/alerts
+  mainWindow.webContents.on('did-frame-finish-load', () => {
+    if (mainWindow.isFocused()) {
+      mainWindow.webContents.focus();
+    }
+  });
+
+  // Periodic focus check - every 3 seconds, ensure webContents has focus if window is focused
+  setInterval(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) {
+      mainWindow.webContents.focus();
+    }
+  }, 3000);
 }
 
 app.whenReady().then(() => {

@@ -66,6 +66,7 @@ const initDB = (app) => {
     db.run(`ALTER TABLE jobs ADD COLUMN taxi_cost REAL DEFAULT 0`, (err) => {});
     db.run(`ALTER TABLE jobs ADD COLUMN owner_name TEXT`, (err) => {});
     db.run(`ALTER TABLE jobs ADD COLUMN owner_phone TEXT`, (err) => {});
+    db.run(`ALTER TABLE jobs ADD COLUMN invoice_number TEXT`, (err) => {});
 
     // Jobs
     db.run(`CREATE TABLE IF NOT EXISTS jobs (
@@ -81,6 +82,7 @@ const initDB = (app) => {
       total_price DECIMAL(10,2) DEFAULT 0.00,
       owner_name TEXT,
       owner_phone TEXT,
+      invoice_number TEXT,
       completion_date DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(vehicle_id) REFERENCES vehicles(vehicle_id) ON DELETE CASCADE,
@@ -118,6 +120,16 @@ const initDB = (app) => {
       FOREIGN KEY(vehicle_id) REFERENCES vehicles(vehicle_id) ON DELETE CASCADE
     )`);
 
+    // Job Images (damage photos, notes, etc. - multiple per job)
+    db.run(`CREATE TABLE IF NOT EXISTS job_images (
+      image_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      image_path TEXT NOT NULL,
+      caption TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+    )`);
+
     // Labor Charges (tracks time entries per job)
     db.run(`CREATE TABLE IF NOT EXISTS labor_charges (
       labor_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,6 +156,7 @@ const initDB = (app) => {
     db.run("CREATE INDEX IF NOT EXISTS idx_labor_charges_job ON labor_charges(job_id)");
     db.run("CREATE INDEX IF NOT EXISTS idx_labor_charges_tech ON labor_charges(technician_id)");
     db.run("CREATE INDEX IF NOT EXISTS idx_ownership_vehicle ON ownership_history(vehicle_id)");
+    db.run("CREATE INDEX IF NOT EXISTS idx_job_images_job ON job_images(job_id)");
     
     console.log("Database initialized successfully.");
   });

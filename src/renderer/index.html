@@ -116,6 +116,39 @@
                     }, 100);
                 }
             });
+
+            // Aggressive focus fix: detect when focus is lost to body and restore app responsiveness
+            let focusCheckInterval = null;
+            const startFocusCheck = () => {
+                if (focusCheckInterval) return;
+                focusCheckInterval = setInterval(() => {
+                    // If document.body has focus but user clicked somewhere, webContents might be stuck
+                    if (document.activeElement === document.body) {
+                        // Trigger a micro-focus reset by focusing and blurring a temp element
+                        const temp = document.createElement('input');
+                        temp.style.position = 'absolute';
+                        temp.style.opacity = '0';
+                        temp.style.pointerEvents = 'none';
+                        document.body.appendChild(temp);
+                        temp.focus();
+                        temp.blur();
+                        document.body.removeChild(temp);
+                    }
+                }, 2000); // Check every 2 seconds
+            };
+            
+            // Start focus monitoring after a short delay
+            setTimeout(startFocusCheck, 1000);
+
+            // Also handle mousedown to force focus
+            document.addEventListener('mousedown', (e) => {
+                // Force webContents focus on any click
+                setTimeout(() => {
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+                        e.target.focus();
+                    }
+                }, 10);
+            }, true);
         }
 
         // ===== SRI LANKAN LOCALIZATION & HELPERS =====
@@ -160,6 +193,14 @@
                 // Electron environment - use IPC
                 const res = await ipcRenderer.invoke(type, payload);
                 if (!res.success && res.error !== 'Cancelled') console.error(`Database Error (${type}):`, res.error);
+                // Restore focus after IPC call (helps with Electron focus issues)
+                requestAnimationFrame(() => {
+                    if (document.activeElement === document.body) {
+                        // If nothing is focused, try to refocus the app container
+                        const appRoot = document.getElementById('root');
+                        if (appRoot) appRoot.focus();
+                    }
+                });
                 return res;
             } else {
                 // Browser environment - use fetch API
@@ -904,9 +945,26 @@
                     const vId = vSearch.data[0].vehicle_id;
                     const techId = d.technician && d.technician !== '' ? d.technician : null;
 
+                    // Generate invoice number: INV-YYYY-XXXX (XXXX = sequential number for the year)
+                    const now = new Date();
+                    const year = now.getFullYear();
+                    const invoicePrefix = `INV-${year}-`;
+                    
+                    // Get the next sequential number for this year
+                    const lastInvoice = await callDB('db-query', {
+                        sql: "SELECT invoice_number FROM jobs WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1",
+                        params: [invoicePrefix + '%']
+                    });
+                    let nextNum = 1;
+                    if (lastInvoice.success && lastInvoice.data.length > 0) {
+                        const lastNum = parseInt(lastInvoice.data[0].invoice_number.split('-').pop()) || 0;
+                        nextNum = lastNum + 1;
+                    }
+                    const invoiceNumber = `${invoicePrefix}${String(nextNum).padStart(4, '0')}`;
+
                     const jRes = await callDB('db-run', {
-                        sql: "INSERT INTO jobs (vehicle_id, technician_id, mileage_in, owner_name, owner_phone, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-                        params: [vId, techId, parseInt(d.mileage), d.owner, d.phone]
+                        sql: "INSERT INTO jobs (vehicle_id, technician_id, mileage_in, owner_name, owner_phone, invoice_number, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+                        params: [vId, techId, parseInt(d.mileage), d.owner, d.phone, invoiceNumber]
                     });
                     if (jRes.success) {
                         onSaved();
@@ -1099,6 +1157,7 @@
             const [jobHistory, setJobHistory] = useState([]);
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('jobs');
+            const [showFullPhoto, setShowFullPhoto] = useState(false);
 
             useEffect(() => {
                 const loadHistory = async () => {
@@ -1142,7 +1201,11 @@
                                 <div className="flex gap-4">
                                     {/* Vehicle Photo */}
                                     {vehicle?.photo_path ? (
-                                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-800 border border-slate-700/50">
+                                        <div 
+                                            className="w-24 h-24 rounded-lg overflow-hidden bg-slate-800 border border-slate-700/50 cursor-pointer hover:ring-2 hover:ring-indigo-500 transition-all"
+                                            onClick={() => setShowFullPhoto(true)}
+                                            title="Click to view full size"
+                                        >
                                             <img 
                                                 src={getPhotoUrl(vehicle.photo_path)} 
                                                 alt={licensePlate}
@@ -1249,6 +1312,30 @@
                             )}
                         </div>
                     </div>
+
+                    {/* Full Size Photo Modal */}
+                    {showFullPhoto && vehicle?.photo_path && (
+                        <div 
+                            className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] animate-in fade-in duration-200"
+                            onClick={() => setShowFullPhoto(false)}
+                        >
+                            <div className="relative max-w-[90vw] max-h-[90vh]">
+                                <img 
+                                    src={getPhotoUrl(vehicle.photo_path)} 
+                                    alt={licensePlate}
+                                    className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                                    onClick={(e) => e.stopPropagation()}
+                                />
+                                <button 
+                                    onClick={() => setShowFullPhoto(false)}
+                                    className="absolute -top-4 -right-4 w-10 h-10 bg-slate-800 hover:bg-slate-700 text-white rounded-full flex items-center justify-center text-xl shadow-lg border border-slate-600 transition-colors"
+                                >
+                                    ✕
+                                </button>
+                                <p className="text-center text-slate-400 text-sm mt-4">{licensePlate} • {vehicle?.make_model}</p>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -1279,6 +1366,15 @@
             const [editingPartId, setEditingPartId] = useState(null);
             const [editingPartQty, setEditingPartQty] = useState('');
             const [editingPartPrice, setEditingPartPrice] = useState('');
+            // Invoice number state
+            const [invoiceNumber, setInvoiceNumber] = useState('');
+            const [editingInvoice, setEditingInvoice] = useState(false);
+            const [invoiceInput, setInvoiceInput] = useState('');
+            // Job images state (damage photos, notes, etc.)
+            const [jobImages, setJobImages] = useState([]);
+            const [showImageCarousel, setShowImageCarousel] = useState(false);
+            const [carouselIndex, setCarouselIndex] = useState(0);
+            const jobImageInputRef = useRef();
 
             const load = async () => {
                 const j = await callDB('db-query', { 
@@ -1349,14 +1445,27 @@
                     setLaborCostInput(j.data[0].labor_cost != null ? String(j.data[0].labor_cost) : '');
                     setTaxiCostInput(j.data[0].taxi_cost != null ? String(j.data[0].taxi_cost) : '');
                     setMileageInInput(j.data[0].mileage_in != null ? String(j.data[0].mileage_in) : '');
+                    // Set invoice number
+                    setInvoiceNumber(j.data[0].invoice_number || `JOB-${jobId}`);
                 }
                 if (t.success) setTasks(t.data);
                 if (p.success) setParts(p.data);
                 if (inv.success) setInventory(inv.data);
                 if (techs.success) setTechnicians(techs.data);
+                
+                // Load job images
+                const imgs = await callDB('db-query', { 
+                    sql: "SELECT * FROM job_images WHERE job_id = ? ORDER BY created_at DESC", 
+                    params: [jobId] 
+                });
+                if (imgs.success) setJobImages(imgs.data || []);
             };
 
             const assignTechnician = async (techId) => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 const res = await callDB('db-run', {
                     sql: "UPDATE jobs SET technician_id = ? WHERE job_id = ?",
                     params: [techId || null, jobId]
@@ -1371,6 +1480,10 @@
 
             const addTask = async (e) => {
                 if (e.key === 'Enter' && newTaskText.trim()) {
+                    if (data?.status === 'completed') {
+                        showToast && showToast('Reopen job to make edits', 'warning');
+                        return;
+                    }
                     const taskDescription = newTaskText.trim();
                     await callDB('db-run', { sql: "INSERT INTO job_tasks (job_id, description) VALUES (?, ?)", params: [jobId, taskDescription] });
                     
@@ -1396,6 +1509,10 @@
 
             const addPart = async (id) => {
                 if (!id) return;
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 const item = inventory.find(x => x.part_id == id);
                 const existing = parts.find(p => p.part_id == id);
                 
@@ -1416,6 +1533,10 @@
             };
 
             const removePart = async (item) => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 await callDB('db-run', { sql: "DELETE FROM job_parts WHERE id = ?", params: [item.id] });
                 await callDB('db-run', { sql: "UPDATE inventory SET total_quantity = total_quantity + ? WHERE part_id = ?", params: [item.qty, item.part_id] });
                 load();
@@ -1450,6 +1571,10 @@
             };
 
             const toggleTask = async (taskId, isCompleted) => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 await callDB('db-run', { 
                     sql: "UPDATE job_tasks SET is_completed = ? WHERE task_id = ?", 
                     params: [isCompleted ? 1 : 0, taskId] 
@@ -1459,6 +1584,10 @@
 
             // Edit task description
             const startEditTask = (task) => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 setEditingTaskId(task.task_id);
                 setEditingTaskText(task.description);
             };
@@ -1490,6 +1619,10 @@
 
             // Edit part quantity and price
             const startEditPart = (part) => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
                 setEditingPartId(part.id);
                 setEditingPartQty(String(part.qty));
                 setEditingPartPrice(String(part.price_at_sale));
@@ -1515,8 +1648,107 @@
                 setEditingPartPrice('');
             };
 
+            // Invoice number editing
+            const startEditInvoice = () => {
+                if (data?.status === 'completed') {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return;
+                }
+                setInvoiceInput(invoiceNumber);
+                setEditingInvoice(true);
+            };
+
+            const saveInvoiceNumber = async () => {
+                if (!invoiceInput.trim()) {
+                    alert('Invoice number cannot be empty');
+                    return;
+                }
+                const res = await callDB('db-run', {
+                    sql: "UPDATE jobs SET invoice_number = ? WHERE job_id = ?",
+                    params: [invoiceInput.trim(), jobId]
+                });
+                if (res.success) {
+                    setInvoiceNumber(invoiceInput.trim());
+                    setEditingInvoice(false);
+                    showToast && showToast('Invoice number updated', 'success');
+                }
+            };
+
+            const cancelInvoiceEdit = () => {
+                setEditingInvoice(false);
+                setInvoiceInput('');
+            };
+
+            // Job image functions
+            const handleJobImageUpload = async (e) => {
+                if (isLocked) {
+                    showToast && showToast('Reopen job to add images', 'warning');
+                    return;
+                }
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = async () => {
+                    const base64 = reader.result;
+                    const uploadRes = await ipcRenderer.invoke('upload-photo', {
+                        fileName: `job_${jobId}_${file.name}`,
+                        base64Data: base64
+                    });
+                    if (uploadRes.success) {
+                        // Save to job_images table
+                        await callDB('db-run', {
+                            sql: "INSERT INTO job_images (job_id, image_path, caption) VALUES (?, ?, ?)",
+                            params: [jobId, uploadRes.filePath, '']
+                        });
+                        showToast && showToast('Image added', 'success');
+                        load();
+                    } else {
+                        showToast && showToast('Failed to upload image', 'error');
+                    }
+                };
+                reader.readAsDataURL(file);
+                e.target.value = '';
+            };
+
+            const deleteJobImage = async (imageId) => {
+                if (isLocked) {
+                    showToast && showToast('Reopen job to delete images', 'warning');
+                    return;
+                }
+                if (!confirm('Delete this image?')) return;
+                await callDB('db-run', {
+                    sql: "DELETE FROM job_images WHERE image_id = ?",
+                    params: [imageId]
+                });
+                showToast && showToast('Image deleted', 'success');
+                load();
+            };
+
+            const openCarousel = (index) => {
+                setCarouselIndex(index);
+                setShowImageCarousel(true);
+            };
+
+            const getImageUrl = (imagePath) => {
+                if (!imagePath) return '';
+                if (imagePath.startsWith('file://')) return imagePath;
+                return `file://${imagePath}`;
+            };
+
             if (!data) return <div className="p-8 text-slate-400 font-medium">Loading Job Record...</div>;
-            if (isPrint) return <PrintView job={data} tasks={tasks} parts={parts} onBack={() => setIsPrint(false)} />;
+            
+            // Lock editing for completed jobs
+            const isLocked = data.status === 'completed';
+            const checkLocked = (action) => {
+                if (isLocked) {
+                    showToast && showToast('Reopen job to make edits', 'warning');
+                    return true;
+                }
+                return false;
+            };
+            
+            if (isPrint) return <PrintView job={data} tasks={tasks} parts={parts} invoiceNumber={invoiceNumber} onBack={() => setIsPrint(false)} />;
             if (showOwnershipHistory) return <OwnershipHistoryViewer vehicleId={data.vehicle_id} licensePlate={data.license_plate} onClose={() => setShowOwnershipHistory(false)} />;
 
             return (
@@ -1540,6 +1772,11 @@
                                     <option value="waiting">Waiting for Parts</option>
                                     <option value="completed">Completed</option>
                                 </select>
+                                {isLocked && (
+                                    <span className="bg-amber-600/20 text-amber-400 px-3 py-1 rounded-full text-xs font-semibold border border-amber-500/30 flex items-center gap-1">
+                                        🔒 Locked
+                                    </span>
+                                )}
                             </div>
                             <button onClick={() => setIsPrint(true)} className="bg-slate-800/50 hover:bg-slate-700/50 text-slate-300 px-4 py-2 rounded-lg font-semibold text-sm border border-slate-700/50 transition-colors">📄 Invoice</button>
                             {data.status === 'completed' ? (
@@ -1609,6 +1846,7 @@
                                             </div>
                                         )
                                     ))}
+                                    {!isLocked && (
                                     <div className="relative">
                                         <input 
                                             value={newTaskText}
@@ -1650,12 +1888,14 @@
                                             </div>
                                         )}
                                     </div>
+                                    )}
                                 </div>
                             </section>
 
                             <section className="glass-dark p-6 rounded-xl border border-slate-700/50">
                                 <div className="flex justify-between items-center mb-4">
                                     <h3 className="text-lg font-bold flex items-center text-white"><span className="mr-2">📦</span> Parts Installed</h3>
+                                    {!isLocked && (
                                     <div className="relative w-64">
                                         <input 
                                             type="text"
@@ -1699,6 +1939,7 @@
                                             </div>
                                         )}
                                     </div>
+                                    )}
                                 </div>
                                 <div className="space-y-2">
                                     {parts.map(p => (
@@ -1747,11 +1988,90 @@
                                     {parts.length === 0 && <p className="text-center py-6 text-slate-500 text-sm">No parts added yet.</p>}
                                 </div>
                             </section>
+
+                            {/* Job Images Section */}
+                            <section className="glass-dark p-6 rounded-xl border border-slate-700/50">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-lg font-bold flex items-center text-white"><span className="mr-2">📷</span> Job Photos</h3>
+                                    {!isLocked && (
+                                        <label className="bg-indigo-600/80 hover:bg-indigo-600 text-white px-3 py-2 rounded-lg font-semibold text-xs cursor-pointer transition-colors">
+                                            + Add Photo
+                                            <input 
+                                                type="file" 
+                                                accept="image/*" 
+                                                className="hidden" 
+                                                ref={jobImageInputRef}
+                                                onChange={handleJobImageUpload}
+                                            />
+                                        </label>
+                                    )}
+                                </div>
+                                {jobImages.length > 0 ? (
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {jobImages.map((img, idx) => (
+                                            <div 
+                                                key={img.image_id} 
+                                                className="relative aspect-square rounded-lg overflow-hidden bg-slate-800 border border-slate-700/50 group cursor-pointer"
+                                                onClick={() => openCarousel(idx)}
+                                            >
+                                                <img 
+                                                    src={getImageUrl(img.image_path)} 
+                                                    alt={`Job photo ${idx + 1}`}
+                                                    className="w-full h-full object-cover hover:scale-105 transition-transform"
+                                                />
+                                                {!isLocked && (
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); deleteJobImage(img.image_id); }}
+                                                        className="absolute top-1 right-1 w-6 h-6 bg-red-600/80 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                                                    <span className="text-white text-xl opacity-0 group-hover:opacity-100 transition-opacity">🔍</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-center py-6 text-slate-500 text-sm">
+                                        {isLocked ? 'No photos for this job.' : 'Add damage photos or notes for this job.'}
+                                    </p>
+                                )}
+                            </section>
                         </div>
 
                         {/* RIGHT: Info Sidebar */}
                         <div className="space-y-6">
                             <section className="bg-gradient-to-br from-indigo-900/40 to-slate-900/40 text-slate-100 p-6 rounded-xl border border-indigo-500/30 shadow-lg shadow-indigo-500/5">
+                                {/* Invoice Number */}
+                                <div className="flex justify-between items-center mb-4 pb-3 border-b border-indigo-500/20">
+                                    <span className="text-xs font-semibold text-indigo-400 uppercase tracking-wide">Invoice</span>
+                                    {editingInvoice ? (
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="text"
+                                                value={invoiceInput}
+                                                onChange={(e) => setInvoiceInput(e.target.value.toUpperCase())}
+                                                onKeyDown={(e) => { if (e.key === 'Enter') saveInvoiceNumber(); if (e.key === 'Escape') cancelInvoiceEdit(); }}
+                                                className="w-32 px-2 py-1 bg-slate-800/50 border border-indigo-500/50 rounded text-sm font-mono text-white outline-none"
+                                                autoFocus
+                                            />
+                                            <button onClick={saveInvoiceNumber} className="text-emerald-400 hover:text-emerald-300 text-sm">✓</button>
+                                            <button onClick={cancelInvoiceEdit} className="text-slate-400 hover:text-slate-300 text-sm">✕</button>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center gap-2 group">
+                                            <span className="font-mono font-semibold text-sm text-white">{invoiceNumber}</span>
+                                            <button 
+                                                onClick={startEditInvoice}
+                                                className="text-slate-500 hover:text-indigo-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                                                title="Edit invoice number"
+                                            >✏️</button>
+                                        </div>
+                                    )}
+                                </div>
+                                
                                 <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wide mb-2">Vehicle</p>
                                 <h2 className="text-2xl font-bold mb-1">{data.license_plate}</h2>
                                 <p className="text-slate-400 text-sm mb-6">{data.make_model}</p>
@@ -1777,7 +2097,8 @@
                                         <select 
                                             value={data.technician_id || ''}
                                             onChange={(e) => assignTechnician(e.target.value)}
-                                            className="w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-xs font-semibold outline-none focus:border-indigo-500 text-slate-200"
+                                            disabled={isLocked}
+                                            className={`w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-xs font-semibold outline-none focus:border-indigo-500 text-slate-200 ${isLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                                         >
                                             <option value="">— No Assignment —</option>
                                             {technicians.map(t => (
@@ -1795,14 +2116,16 @@
                                             id="mileage_in" 
                                             placeholder="0" 
                                             value={mileageInInput} 
-                                            onChange={(e) => setMileageInInput(e.target.value.replace(/[^0-9]/g, ''))}
+                                            onChange={(e) => !isLocked && setMileageInInput(e.target.value.replace(/[^0-9]/g, ''))}
                                             onBlur={async (e) => {
+                                                if (isLocked) return;
                                                 await callDB('db-run', { 
                                                     sql: "UPDATE jobs SET mileage_in = ? WHERE job_id = ?", 
                                                     params: [parseFloat(e.target.value) || 0, jobId] 
                                                 });
                                             }}
-                                            className="w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500" 
+                                            disabled={isLocked}
+                                            className={`w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500 ${isLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                                         />
                                     </div>
                                     <div className="pb-2 border-b border-slate-700/30">
@@ -1813,14 +2136,16 @@
                                             id="labor_cost" 
                                             placeholder="0" 
                                             value={laborCostInput} 
-                                            onChange={(e) => setLaborCostInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                                            onChange={(e) => !isLocked && setLaborCostInput(e.target.value.replace(/[^0-9.]/g, ''))}
                                             onBlur={async (e) => {
+                                                if (isLocked) return;
                                                 await callDB('db-run', { 
                                                     sql: "UPDATE jobs SET labor_cost = ? WHERE job_id = ?", 
                                                     params: [parseFloat(e.target.value) || 0, jobId] 
                                                 });
                                             }}
-                                            className="w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500" 
+                                            disabled={isLocked}
+                                            className={`w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500 ${isLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                                         />
                                     </div>
                                     <div className="pb-2 border-b border-slate-700/30">
@@ -1831,14 +2156,16 @@
                                             id="taxi_cost" 
                                             placeholder="0" 
                                             value={taxiCostInput} 
-                                            onChange={(e) => setTaxiCostInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                                            onChange={(e) => !isLocked && setTaxiCostInput(e.target.value.replace(/[^0-9.]/g, ''))}
                                             onBlur={async (e) => {
+                                                if (isLocked) return;
                                                 await callDB('db-run', { 
                                                     sql: "UPDATE jobs SET taxi_cost = ? WHERE job_id = ?", 
                                                     params: [parseFloat(e.target.value) || 0, jobId] 
                                                 });
                                             }}
-                                            className="w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500" 
+                                            disabled={isLocked}
+                                            className={`w-full p-2 bg-slate-800/50 border border-slate-700/50 rounded text-white font-semibold text-sm outline-none focus:border-indigo-500 ${isLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                                         />
                                     </div>
                                     <div className="flex justify-between">
@@ -1876,12 +2203,84 @@
                             </section>
                         </div>
                     </div>
+
+                    {/* Image Carousel Modal */}
+                    {showImageCarousel && jobImages.length > 0 && (
+                        <div 
+                            className="fixed inset-0 bg-black/95 flex items-center justify-center z-50 animate-in fade-in duration-200"
+                            onClick={() => setShowImageCarousel(false)}
+                        >
+                            <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
+                                {/* Close button */}
+                                <button 
+                                    onClick={() => setShowImageCarousel(false)}
+                                    className="absolute -top-12 right-0 w-10 h-10 bg-slate-800 hover:bg-slate-700 text-white rounded-full flex items-center justify-center text-xl shadow-lg border border-slate-600 transition-colors z-10"
+                                >
+                                    ✕
+                                </button>
+
+                                {/* Image counter */}
+                                <div className="absolute -top-12 left-0 text-slate-400 text-sm font-semibold">
+                                    {carouselIndex + 1} / {jobImages.length}
+                                </div>
+
+                                {/* Main image */}
+                                <img 
+                                    src={getImageUrl(jobImages[carouselIndex]?.image_path)} 
+                                    alt={`Job photo ${carouselIndex + 1}`}
+                                    className="max-w-full max-h-[75vh] object-contain rounded-lg shadow-2xl"
+                                />
+
+                                {/* Navigation arrows */}
+                                {jobImages.length > 1 && (
+                                    <>
+                                        <button 
+                                            onClick={() => setCarouselIndex((carouselIndex - 1 + jobImages.length) % jobImages.length)}
+                                            className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-16 w-12 h-12 bg-slate-800/80 hover:bg-slate-700 text-white rounded-full flex items-center justify-center text-2xl transition-colors"
+                                        >
+                                            ‹
+                                        </button>
+                                        <button 
+                                            onClick={() => setCarouselIndex((carouselIndex + 1) % jobImages.length)}
+                                            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-16 w-12 h-12 bg-slate-800/80 hover:bg-slate-700 text-white rounded-full flex items-center justify-center text-2xl transition-colors"
+                                        >
+                                            ›
+                                        </button>
+                                    </>
+                                )}
+
+                                {/* Thumbnail strip */}
+                                {jobImages.length > 1 && (
+                                    <div className="flex gap-2 mt-4 overflow-x-auto max-w-[80vw] py-2">
+                                        {jobImages.map((img, idx) => (
+                                            <button
+                                                key={img.image_id}
+                                                onClick={() => setCarouselIndex(idx)}
+                                                className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${idx === carouselIndex ? 'border-indigo-500 scale-110' : 'border-slate-700 opacity-60 hover:opacity-100'}`}
+                                            >
+                                                <img 
+                                                    src={getImageUrl(img.image_path)} 
+                                                    alt={`Thumbnail ${idx + 1}`}
+                                                    className="w-full h-full object-cover"
+                                                />
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Caption / Date */}
+                                <p className="text-center text-slate-500 text-sm mt-4">
+                                    {formatDateSL(jobImages[carouselIndex]?.created_at)}
+                                </p>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
 
         // PRINT VIEW - Invoice & Job Card (Template-aware)
-        const PrintView = ({ job, tasks, parts, onBack }) => {
+        const PrintView = ({ job, tasks, parts, invoiceNumber, onBack }) => {
             // Load invoice template from localStorage
             const getTemplate = () => {
                 const defaultTemplate = {
@@ -1959,7 +2358,7 @@
                                 </div>
                             </div>
                             <div className="text-right">
-                                <h2 className="text-base font-bold mb-0.5">INVOICE #{job.job_id}</h2>
+                                <h2 className="text-base font-bold mb-0.5">INVOICE {invoiceNumber || `#${job.job_id}`}</h2>
                                 <p className="text-[11px] text-slate-400">{new Date().toLocaleDateString()}</p>
                             </div>
                         </div>
@@ -2133,8 +2532,11 @@
             // Autocomplete states
             const [partNameInput, setPartNameInput] = useState('');
             const [showPartNameDropdown, setShowPartNameDropdown] = useState(false);
+            const [partNumberInput, setPartNumberInput] = useState('');
             const [categoryInput, setCategoryInput] = useState('');
             const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+            const [costInput, setCostInput] = useState('');
+            const [retailPriceInput, setRetailPriceInput] = useState('');
             const partNameRef = useRef();
             const categoryRef = useRef();
 
@@ -2317,7 +2719,10 @@
                 setPartPhotoPath(null);
                 setPartCondition('new');
                 setPartNameInput('');
+                setPartNumberInput('');
                 setCategoryInput('');
+                setCostInput('');
+                setRetailPriceInput('');
             };
 
             const handleSubmit = async (e) => {
@@ -2327,11 +2732,15 @@
 
                 // Use state values for autocomplete fields
                 d.name = partNameInput;
+                d.number = partNumberInput;
                 d.cat = categoryInput;
+                d.cost = costInput;
+                d.price = retailPriceInput;
 
                 if (!d.name || !d.name.trim()) return alert("Part name is required");
                 if (!d.number || !d.number.trim()) return alert("Part number is required");
-                if (parseFloat(d.price) < 0) return alert("Price cannot be negative");
+                if (!d.cost || parseFloat(d.cost) < 0) return alert("Cost is required and cannot be negative");
+                if (!d.price || parseFloat(d.price) < 0) return alert("Retail price is required and cannot be negative");
 
                 // Upload photo if provided
                 let uploadedPhotoPath = null;
@@ -2341,21 +2750,41 @@
                 }
 
                 const existing = items.find(x => x.part_number === d.number);
+                const newQty = parseInt(d.qty) || 0;
+                const newCost = parseFloat(d.cost) || 0;
+                const newRetail = parseFloat(d.price) || 0;
 
                 if (existing) {
-                    // Update existing part - add to quantity
+                    // Calculate weighted average prices
+                    const existingQty = existing.total_quantity || 0;
+                    const existingCost = existing.avg_cost || 0;
+                    const existingRetail = existing.retail_price || 0;
+                    const totalQty = existingQty + newQty;
+                    
+                    // Weighted average: (oldQty * oldPrice + newQty * newPrice) / totalQty
+                    const avgCost = totalQty > 0 
+                        ? ((existingQty * existingCost) + (newQty * newCost)) / totalQty 
+                        : newCost;
+                    const avgRetail = totalQty > 0 
+                        ? ((existingQty * existingRetail) + (newQty * newRetail)) / totalQty 
+                        : newRetail;
+                    
+                    // Update existing part with weighted averages
                     await callDB('db-run', {
-                        sql: "UPDATE inventory SET total_quantity = total_quantity + ?, retail_price = ?, part_name = ?, category = ?, condition = ?, photo_path = COALESCE(?, photo_path) WHERE part_id = ?",
-                        params: [parseInt(d.qty), parseFloat(d.price), d.name, d.cat, partCondition, uploadedPhotoPath, existing.part_id]
+                        sql: "UPDATE inventory SET total_quantity = ?, avg_cost = ?, retail_price = ?, part_name = ?, category = ?, condition = ?, photo_path = COALESCE(?, photo_path) WHERE part_id = ?",
+                        params: [totalQty, Math.round(avgCost * 100) / 100, Math.round(avgRetail * 100) / 100, d.name, d.cat, partCondition, uploadedPhotoPath, existing.part_id]
                     });
+                    
+                    showToast && showToast(`Stock updated! New avg price: ${formatLKR(avgRetail)}`, 'success');
                     resetForm();
                     load();
                 } else {
                     const res = await callDB('db-run', {
                         sql: "INSERT INTO inventory (part_name, part_number, total_quantity, avg_cost, retail_price, category, condition, photo_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        params: [d.name, d.number, parseInt(d.qty), parseFloat(d.price), parseFloat(d.price), d.cat, partCondition, uploadedPhotoPath]
+                        params: [d.name, d.number, newQty, newCost, newRetail, d.cat, partCondition, uploadedPhotoPath]
                     });
                     if (res.success) { 
+                        showToast && showToast('New part added to inventory!', 'success');
                         resetForm();
                         load(); 
                     }
@@ -2718,20 +3147,52 @@
                                         />
                                         {showPartNameDropdown && partNameSuggestions.length > 0 && (
                                             <div className="absolute top-full left-0 right-0 bg-slate-800 border border-slate-700 rounded-lg mt-1 z-20 max-h-48 overflow-y-auto shadow-lg">
-                                                {partNameSuggestions.map(part => (
-                                                    <button 
-                                                        key={part} 
-                                                        type="button" 
-                                                        onClick={() => { setPartNameInput(part); setShowPartNameDropdown(false); }}
-                                                        className="w-full text-left px-4 py-2 text-slate-200 hover:bg-indigo-600/30 transition-colors text-sm border-b border-slate-700/30 last:border-b-0"
-                                                    >
-                                                        {part}
-                                                    </button>
-                                                ))}
+                                                {partNameSuggestions.map(part => {
+                                                    // Find existing item with this part name to show part number hint
+                                                    const existingItem = items.find(i => i.part_name === part);
+                                                    return (
+                                                        <button 
+                                                            key={part} 
+                                                            type="button" 
+                                                            onClick={() => { 
+                                                                setPartNameInput(part); 
+                                                                setShowPartNameDropdown(false);
+                                                                // Auto-fill part number, category, prices and photo if this part exists in inventory
+                                                                if (existingItem) {
+                                                                    setPartNumberInput(existingItem.part_number || '');
+                                                                    setCategoryInput(existingItem.category || '');
+                                                                    setPartCondition(existingItem.condition || 'new');
+                                                                    // Auto-fill prices - user can adjust for this batch
+                                                                    setCostInput(String(existingItem.avg_cost || ''));
+                                                                    setRetailPriceInput(String(existingItem.retail_price || ''));
+                                                                    if (existingItem.photo_path) {
+                                                                        setPartPhotoPath(existingItem.photo_path);
+                                                                    }
+                                                                }
+                                                            }}
+                                                            className="w-full text-left px-4 py-2 text-slate-200 hover:bg-indigo-600/30 transition-colors text-sm border-b border-slate-700/30 last:border-b-0"
+                                                        >
+                                                            <span>{part}</span>
+                                                            {existingItem && (
+                                                                <span className="text-xs text-slate-500 ml-2">({existingItem.part_number})</span>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
-                                    <Input label="Part Number" name="number" required />
+                                    <div className="flex flex-col">
+                                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Part Number</label>
+                                        <input 
+                                            type="text"
+                                            value={partNumberInput}
+                                            onChange={(e) => setPartNumberInput(e.target.value)}
+                                            placeholder="e.g., OEM-12345"
+                                            className="px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg text-slate-200 outline-none focus:border-indigo-500"
+                                            required
+                                        />
+                                    </div>
                                 </div>
                                 
                                 <div className="grid grid-cols-2 gap-4 mt-4">
@@ -2774,11 +3235,44 @@
                                     </div>
                                 </div>
                                 
-                                <div className="grid grid-cols-2 gap-4 mt-4">
-                                    <Input label="Quantity" name="qty" type="number" required defaultValue="1" />
-                                    <Input label="Price (LKR)" name="price" type="number" step="0.01" required />
+                                <div className="grid grid-cols-3 gap-4 mt-4">
+                                    <div className="flex flex-col">
+                                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Quantity</label>
+                                        <input 
+                                            type="number"
+                                            name="qty"
+                                            defaultValue="1"
+                                            min="1"
+                                            className="px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg text-slate-200 outline-none focus:border-indigo-500"
+                                            required
+                                        />
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Cost (LKR)</label>
+                                        <input 
+                                            type="number"
+                                            step="0.01"
+                                            value={costInput}
+                                            onChange={(e) => setCostInput(e.target.value)}
+                                            placeholder="Purchase cost"
+                                            className="px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg text-slate-200 outline-none focus:border-indigo-500"
+                                            required
+                                        />
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Retail Price</label>
+                                        <input 
+                                            type="number"
+                                            step="0.01"
+                                            value={retailPriceInput}
+                                            onChange={(e) => setRetailPriceInput(e.target.value)}
+                                            placeholder="Selling price"
+                                            className="px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-lg text-slate-200 outline-none focus:border-indigo-500"
+                                            required
+                                        />
+                                    </div>
                                 </div>
-                                <p className="text-xs text-slate-500 mt-2">💡 Price can be adjusted when adding parts to a job</p>
+                                <p className="text-xs text-slate-500 mt-2">💡 When restocking, prices are averaged with existing stock. Job sheet prices remain locked.</p>
                                 
                                 <div className="flex gap-3 mt-8">
                                     <button type="button" onClick={resetForm} className="flex-1 py-3 font-semibold text-slate-400">Cancel</button>
@@ -2987,6 +3481,7 @@
             const [ownerHistory, setOwnerHistory] = useState([]);
             const [uniqueMakes, setUniqueMakes] = useState([]);
             const [uniqueYears, setUniqueYears] = useState([]);
+            const [showFullPhoto, setShowFullPhoto] = useState(false);
 
             // Load all vehicles on mount
             useEffect(() => {
@@ -3266,7 +3761,9 @@
                                         <img 
                                             src={`file://${selectedVehicle.photo_path}`} 
                                             alt="Vehicle" 
-                                            className="w-32 h-32 object-cover rounded-lg border border-slate-700/50"
+                                            className="w-32 h-32 object-cover rounded-lg border border-slate-700/50 cursor-pointer hover:ring-2 hover:ring-indigo-500 transition-all"
+                                            onClick={() => setShowFullPhoto(true)}
+                                            title="Click to view full size"
                                         />
                                     )}
                                     <div className="flex-1">
@@ -3357,6 +3854,30 @@
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* Full Size Photo Modal */}
+                    {showFullPhoto && selectedVehicle?.photo_path && (
+                        <div 
+                            className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 animate-in fade-in duration-200"
+                            onClick={() => setShowFullPhoto(false)}
+                        >
+                            <div className="relative max-w-[90vw] max-h-[90vh]">
+                                <img 
+                                    src={`file://${selectedVehicle.photo_path}`} 
+                                    alt={selectedVehicle.license_plate}
+                                    className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                                    onClick={(e) => e.stopPropagation()}
+                                />
+                                <button 
+                                    onClick={() => setShowFullPhoto(false)}
+                                    className="absolute -top-4 -right-4 w-10 h-10 bg-slate-800 hover:bg-slate-700 text-white rounded-full flex items-center justify-center text-xl shadow-lg border border-slate-600 transition-colors"
+                                >
+                                    ✕
+                                </button>
+                                <p className="text-center text-slate-400 text-sm mt-4">{selectedVehicle.license_plate} • {selectedVehicle.make_model}</p>
+                            </div>
                         </div>
                     )}
                 </div>
