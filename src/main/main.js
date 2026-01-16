@@ -13,9 +13,15 @@ let dbPath;
 let mainWindow = null;
 
 function createWindow() {
+  // Determine icon path based on packaged or development mode
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(__dirname, '../../build/icon.ico');
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 950,
+    icon: iconPath,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
