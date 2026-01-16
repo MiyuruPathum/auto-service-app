@@ -10,8 +10,10 @@ let uploadsDir;
 let db;
 let dbPath;
 
+let mainWindow = null;
+
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 950,
     webPreferences: {
@@ -20,12 +22,22 @@ function createWindow() {
     }
   });
 
-  win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   
   // Open DevTools only in development mode (not when packaged)
   if (!app.isPackaged) {
-    win.webContents.openDevTools({ mode: 'right' });
+    mainWindow.webContents.openDevTools({ mode: 'right' });
   }
+  
+  // Fix for focus issues - ensure window stays responsive
+  mainWindow.on('blur', () => {
+    // When app loses focus and regains, ensure inputs work
+  });
+  
+  mainWindow.on('focus', () => {
+    // Force focus to webContents when window gains focus
+    mainWindow.webContents.focus();
+  });
 }
 
 app.whenReady().then(() => {

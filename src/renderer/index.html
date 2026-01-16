@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Workshop Pro | Management Suite</title>
+    <link rel="icon" type="image/x-icon" href="../../build/icon.ico">
     <!-- Local libraries for offline support -->
     <script src="./lib/tailwind.min.js"></script>
     <script src="./lib/react.development.js"></script>
@@ -68,8 +69,53 @@
         // Detect if running in Electron or browser
         const isElectron = typeof require !== 'undefined' && typeof require('electron') !== 'undefined';
         let ipcRenderer = null;
+        let logoPath = '../../build/logo.png'; // Default for development
         if (isElectron) {
-            try { ipcRenderer = require('electron').ipcRenderer; } catch(e) { /* browser */ }
+            try { 
+                ipcRenderer = require('electron').ipcRenderer;
+                // In packaged app, use the extraResources path
+                const { app } = require('@electron/remote') || {};
+                const path = require('path');
+                const fs = require('fs');
+                // Check if we're in a packaged app
+                const possiblePaths = [
+                    path.join(process.resourcesPath || '', 'logo.png'),
+                    path.join(__dirname, '..', '..', 'build', 'logo.png'),
+                    '../../build/logo.png'
+                ];
+                for (const p of possiblePaths) {
+                    try {
+                        if (fs.existsSync(p)) {
+                            logoPath = p;
+                            break;
+                        }
+                    } catch(e) {}
+                }
+            } catch(e) { /* browser */ }
+        }
+
+        // Fix for Electron focus issues - reset any stuck focus states
+        if (isElectron) {
+            document.addEventListener('click', (e) => {
+                // Ensure click events propagate properly
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+                    e.target.focus();
+                }
+            }, true);
+            
+            // Handle visibility change to reset focus
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    // Small delay to ensure window is fully focused
+                    setTimeout(() => {
+                        const activeEl = document.activeElement;
+                        if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+                            activeEl.blur();
+                            activeEl.focus();
+                        }
+                    }, 100);
+                }
+            });
         }
 
         // ===== SRI LANKAN LOCALIZATION & HELPERS =====
@@ -206,7 +252,19 @@
             const [selectedJob, setSelectedJob] = useState(null);
             const [techUser, setTechUser] = useState(null);
             const [appError, setAppError] = useState(null);
+            const [businessName, setBusinessName] = useState('');
             const { showToast, ToastContainer } = useToast();
+
+            // Load business name from settings
+            useEffect(() => {
+                try {
+                    const saved = localStorage.getItem('workshopSettings');
+                    if (saved) {
+                        const settings = JSON.parse(saved);
+                        if (settings.shopName) setBusinessName(settings.shopName);
+                    }
+                } catch (e) {}
+            }, [view]); // Re-check when view changes (in case settings were updated)
 
             const showError = (title, message) => {
                 setAppError({ title, message });
@@ -230,9 +288,12 @@
                     <div className="flex h-screen overflow-hidden bg-slate-950">
                         {/* Sidebar */}
                         <aside className="w-64 bg-slate-900/80 border-r border-slate-800/50 flex flex-col p-4 no-print backdrop-blur-sm">
-                            <div className="px-4 py-3 text-white font-bold mb-8 text-sm tracking-wide">
-                                <div className="text-indigo-400 text-lg font-black">⚙</div>
-                                <div className="mt-1">WORKSHOP PRO</div>
+                            <div className="px-4 py-3 text-white font-bold mb-6 text-sm tracking-wide flex items-center gap-3">
+                                <img src={logoPath} alt="Workshop Pro" className="w-10 h-10 object-contain" />
+                                <div>
+                                    <div>WORKSHOP PRO</div>
+                                    {businessName && <div className="text-xs font-normal text-indigo-400 mt-0.5">{businessName}</div>}
+                                </div>
                             </div>
                             <nav className="flex-1 space-y-1">
                                 <NavButton icon="📊" label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
@@ -1195,6 +1256,12 @@
             const [mileageInInput, setMileageInInput] = useState('');
             const [showTaskDropdown, setShowTaskDropdown] = useState(false);
             const [serviceChecklistItems, setServiceChecklistItems] = useState([]);
+            // Edit states for tasks and parts
+            const [editingTaskId, setEditingTaskId] = useState(null);
+            const [editingTaskText, setEditingTaskText] = useState('');
+            const [editingPartId, setEditingPartId] = useState(null);
+            const [editingPartQty, setEditingPartQty] = useState('');
+            const [editingPartPrice, setEditingPartPrice] = useState('');
 
             const load = async () => {
                 const j = await callDB('db-query', { 
@@ -1373,6 +1440,64 @@
                 load();
             };
 
+            // Edit task description
+            const startEditTask = (task) => {
+                setEditingTaskId(task.task_id);
+                setEditingTaskText(task.description);
+            };
+
+            const saveTaskEdit = async () => {
+                if (!editingTaskText.trim()) return;
+                await callDB('db-run', {
+                    sql: "UPDATE job_tasks SET description = ? WHERE task_id = ?",
+                    params: [editingTaskText.trim(), editingTaskId]
+                });
+                setEditingTaskId(null);
+                setEditingTaskText('');
+                load();
+                showToast && showToast('Task updated', 'success');
+            };
+
+            const cancelTaskEdit = () => {
+                setEditingTaskId(null);
+                setEditingTaskText('');
+            };
+
+            const deleteTask = async (taskId) => {
+                if (confirm('Delete this task?')) {
+                    await callDB('db-run', { sql: "DELETE FROM job_tasks WHERE task_id = ?", params: [taskId] });
+                    load();
+                    showToast && showToast('Task deleted', 'success');
+                }
+            };
+
+            // Edit part quantity and price
+            const startEditPart = (part) => {
+                setEditingPartId(part.id);
+                setEditingPartQty(String(part.qty));
+                setEditingPartPrice(String(part.price_at_sale));
+            };
+
+            const savePartEdit = async () => {
+                const qty = parseInt(editingPartQty) || 1;
+                const price = parseFloat(editingPartPrice) || 0;
+                await callDB('db-run', {
+                    sql: "UPDATE job_parts SET qty = ?, price_at_sale = ? WHERE id = ?",
+                    params: [qty, price, editingPartId]
+                });
+                setEditingPartId(null);
+                setEditingPartQty('');
+                setEditingPartPrice('');
+                load();
+                showToast && showToast('Part updated', 'success');
+            };
+
+            const cancelPartEdit = () => {
+                setEditingPartId(null);
+                setEditingPartQty('');
+                setEditingPartPrice('');
+            };
+
             if (!data) return <div className="p-8 text-slate-400 font-medium">Loading Job Record...</div>;
             if (isPrint) return <PrintView job={data} tasks={tasks} parts={parts} onBack={() => setIsPrint(false)} />;
             if (showOwnershipHistory) return <OwnershipHistoryViewer vehicleId={data.vehicle_id} licensePlate={data.license_plate} onClose={() => setShowOwnershipHistory(false)} />;
@@ -1438,10 +1563,34 @@
                                 <h3 className="text-lg font-bold mb-4 flex items-center text-white"><span className="mr-2">✓</span> Service Checklist</h3>
                                 <div className="space-y-2">
                                     {tasks.map(t => (
-                                        <div key={t.task_id} onClick={() => toggleTask(t.task_id, !t.is_completed)} className={`p-4 rounded-lg flex justify-between items-center border transition-all cursor-pointer ${t.is_completed ? 'bg-emerald-600/10 border-emerald-500/30 text-emerald-300' : 'bg-slate-800/30 border-slate-700/50 text-slate-300 hover:border-indigo-500/30'}`}>
-                                            <span className={t.is_completed ? 'line-through opacity-50 font-medium' : 'font-medium'}>{t.description}</span>
-                                            {t.is_completed ? <span className="text-xs font-semibold uppercase text-emerald-400">✓ Done</span> : <span className="text-xs font-semibold uppercase text-slate-500">○ Pending</span>}
-                                        </div>
+                                        editingTaskId === t.task_id ? (
+                                            <div key={t.task_id} className="p-4 rounded-lg bg-indigo-600/20 border border-indigo-500/50 flex gap-2 items-center">
+                                                <input 
+                                                    type="text"
+                                                    value={editingTaskText}
+                                                    onChange={(e) => setEditingTaskText(e.target.value)}
+                                                    onKeyDown={(e) => { if (e.key === 'Enter') saveTaskEdit(); if (e.key === 'Escape') cancelTaskEdit(); }}
+                                                    className="flex-1 p-2 bg-slate-800/50 border border-slate-600 rounded text-sm text-white outline-none focus:border-indigo-500"
+                                                    autoFocus
+                                                />
+                                                <button onClick={saveTaskEdit} className="px-3 py-2 bg-emerald-600/80 hover:bg-emerald-600 text-white rounded text-xs font-semibold">Save</button>
+                                                <button onClick={cancelTaskEdit} className="px-3 py-2 bg-slate-600/80 hover:bg-slate-600 text-white rounded text-xs font-semibold">Cancel</button>
+                                            </div>
+                                        ) : (
+                                            <div key={t.task_id} className={`p-4 rounded-lg flex justify-between items-center border transition-all group ${t.is_completed ? 'bg-emerald-600/10 border-emerald-500/30 text-emerald-300' : 'bg-slate-800/30 border-slate-700/50 text-slate-300 hover:border-indigo-500/30'}`}>
+                                                <div className="flex items-center gap-3 flex-1">
+                                                    <button onClick={() => toggleTask(t.task_id, !t.is_completed)} className="flex-shrink-0">
+                                                        {t.is_completed ? <span className="text-emerald-400">✓</span> : <span className="text-slate-500">○</span>}
+                                                    </button>
+                                                    <span onClick={() => startEditTask(t)} className={`cursor-pointer hover:text-indigo-400 ${t.is_completed ? 'line-through opacity-50 font-medium' : 'font-medium'}`}>{t.description}</span>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={() => startEditTask(t)} className="text-slate-500 hover:text-indigo-400 text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity">✏️</button>
+                                                    <button onClick={() => deleteTask(t.task_id)} className="text-slate-500 hover:text-red-400 text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity">🗑️</button>
+                                                    {t.is_completed ? <span className="text-xs font-semibold uppercase text-emerald-400">Done</span> : <span className="text-xs font-semibold uppercase text-slate-500">Pending</span>}
+                                                </div>
+                                            </div>
+                                        )
                                     ))}
                                     <div className="relative">
                                         <input 
@@ -1536,16 +1685,47 @@
                                 </div>
                                 <div className="space-y-2">
                                     {parts.map(p => (
-                                        <div key={p.id} className="flex justify-between items-center p-4 bg-indigo-600/10 rounded-lg border border-indigo-500/30 group">
-                                            <div>
-                                                <p className="font-semibold text-indigo-300">{p.part_name}</p>
-                                                <p className="text-xs font-mono text-indigo-500/70">{formatLKR(p.price_at_sale)} × {p.qty}</p>
+                                        editingPartId === p.id ? (
+                                            <div key={p.id} className="p-4 bg-indigo-600/20 rounded-lg border border-indigo-500/50">
+                                                <p className="font-semibold text-indigo-300 mb-3">{p.part_name}</p>
+                                                <div className="flex gap-3 items-end">
+                                                    <div className="flex-1">
+                                                        <label className="text-xs text-slate-400 block mb-1">Price (LKR)</label>
+                                                        <input 
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={editingPartPrice}
+                                                            onChange={(e) => setEditingPartPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+                                                            className="w-full p-2 bg-slate-800/50 border border-slate-600 rounded text-sm text-white outline-none focus:border-indigo-500"
+                                                        />
+                                                    </div>
+                                                    <div className="w-20">
+                                                        <label className="text-xs text-slate-400 block mb-1">Qty</label>
+                                                        <input 
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            value={editingPartQty}
+                                                            onChange={(e) => setEditingPartQty(e.target.value.replace(/[^0-9]/g, ''))}
+                                                            className="w-full p-2 bg-slate-800/50 border border-slate-600 rounded text-sm text-white outline-none focus:border-indigo-500"
+                                                        />
+                                                    </div>
+                                                    <button onClick={savePartEdit} className="px-3 py-2 bg-emerald-600/80 hover:bg-emerald-600 text-white rounded text-xs font-semibold">Save</button>
+                                                    <button onClick={cancelPartEdit} className="px-3 py-2 bg-slate-600/80 hover:bg-slate-600 text-white rounded text-xs font-semibold">Cancel</button>
+                                                </div>
                                             </div>
-                                            <div className="flex items-center gap-4">
-                                                <span className="font-semibold text-indigo-300">{formatLKR(p.price_at_sale * p.qty)}</span>
-                                                <button onClick={() => removePart(p)} className="text-red-400/50 hover:text-red-400 font-semibold text-xs hidden group-hover:block">✕</button>
+                                        ) : (
+                                            <div key={p.id} className="flex justify-between items-center p-4 bg-indigo-600/10 rounded-lg border border-indigo-500/30 group">
+                                                <div className="cursor-pointer" onClick={() => startEditPart(p)}>
+                                                    <p className="font-semibold text-indigo-300">{p.part_name}</p>
+                                                    <p className="text-xs font-mono text-indigo-500/70">{formatLKR(p.price_at_sale)} × {p.qty}</p>
+                                                </div>
+                                                <div className="flex items-center gap-3">
+                                                    <span className="font-semibold text-indigo-300">{formatLKR(p.price_at_sale * p.qty)}</span>
+                                                    <button onClick={() => startEditPart(p)} className="text-slate-400 hover:text-indigo-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity">✏️</button>
+                                                    <button onClick={() => removePart(p)} className="text-red-400/50 hover:text-red-400 font-semibold text-xs opacity-0 group-hover:opacity-100 transition-opacity">🗑️</button>
+                                                </div>
                                             </div>
-                                        </div>
+                                        )
                                     ))}
                                     {parts.length === 0 && <p className="text-center py-6 text-slate-500 text-sm">No parts added yet.</p>}
                                 </div>
