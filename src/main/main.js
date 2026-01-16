@@ -326,6 +326,36 @@ ipcMain.handle('upload-photo', async (event, { fileName, base64Data, type, ident
     });
 });
 
+// IPC Handler for deleting a photo file
+ipcMain.handle('delete-file', async (event, { filePath }) => {
+    try {
+        if (!filePath) {
+            return { success: false, error: "Missing filePath" };
+        }
+        
+        // Security: Only allow deleting files within the uploads directory
+        const normalizedPath = path.normalize(filePath);
+        const normalizedUploadsDir = path.normalize(uploadsDir);
+        
+        if (!normalizedPath.startsWith(normalizedUploadsDir)) {
+            console.error("Security: Attempted to delete file outside uploads directory:", filePath);
+            return { success: false, error: "Invalid file path" };
+        }
+        
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`File deleted: ${filePath}`);
+            return { success: true };
+        } else {
+            console.log(`File not found (already deleted?): ${filePath}`);
+            return { success: true }; // Consider it a success if file doesn't exist
+        }
+    } catch (err) {
+        console.error("File Delete Error:", err.message);
+        return { success: false, error: err.message };
+    }
+});
+
 // IPC Handler: Record Labor Charges (CRITICAL - NEW)
 ipcMain.handle('record-labor', async (event, { jobId, technicianId, hoursWorked, hourlyRate }) => {
     return new Promise((resolve) => {
