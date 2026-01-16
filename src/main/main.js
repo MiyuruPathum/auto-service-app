@@ -264,19 +264,38 @@ ipcMain.handle('upload-photo', async (event, { fileName, base64Data, type, ident
                 return;
             }
 
-            // Determine target folder based on type
+            // Determine target folder and generate descriptive filename based on type
             let targetDir = uploadsDir;
+            let descriptiveName = '';
+            const timestamp = Date.now();
+            const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            
+            // Get file extension from base64 or fileName
+            let ext = 'jpg';
+            if (base64Data.includes('data:image/png')) ext = 'png';
+            else if (base64Data.includes('data:image/gif')) ext = 'gif';
+            else if (base64Data.includes('data:image/webp')) ext = 'webp';
+            else if (fileName && fileName.includes('.')) {
+                ext = fileName.split('.').pop().toLowerCase();
+            }
             
             if (type === 'vehicle' && identifier) {
-                // Vehicle photos: uploads/vehicles/ABC-1234/
+                // Vehicle photos: uploads/vehicles/ABC-1234/ABC-1234_2026-01-16_1234567890.jpg
                 const sanitizedPlate = identifier.replace(/[^a-z0-9-]/gi, '_').toUpperCase();
                 targetDir = path.join(uploadsDir, 'vehicles', sanitizedPlate);
+                descriptiveName = `${sanitizedPlate}_${dateStr}_${timestamp}.${ext}`;
             } else if (type === 'job' && identifier) {
-                // Job photos: uploads/jobs/123/
+                // Job photos: uploads/jobs/123/JOB-123_2026-01-16_1234567890.jpg
                 targetDir = path.join(uploadsDir, 'jobs', String(identifier));
+                descriptiveName = `JOB-${identifier}_${dateStr}_${timestamp}.${ext}`;
             } else if (type === 'inventory' && identifier) {
-                // Inventory photos: uploads/inventory/
+                // Inventory photos: uploads/inventory/PART-OEM12345_2026-01-16.jpg
+                const sanitizedPartNum = identifier.replace(/[^a-z0-9-]/gi, '_').toUpperCase();
                 targetDir = path.join(uploadsDir, 'inventory');
+                descriptiveName = `PART-${sanitizedPartNum}_${dateStr}.${ext}`;
+            } else {
+                // General: uploads/photo_2026-01-16_1234567890.jpg
+                descriptiveName = `photo_${dateStr}_${timestamp}.${ext}`;
             }
             
             // Ensure target directory exists
@@ -284,11 +303,7 @@ ipcMain.handle('upload-photo', async (event, { fileName, base64Data, type, ident
                 fs.mkdirSync(targetDir, { recursive: true });
             }
 
-            // Generate filename
-            const timestamp = Date.now();
-            const defaultName = fileName || 'photo.jpg';
-            const sanitizedName = `${timestamp}_${defaultName.replace(/[^a-z0-9._-]/gi, '_')}`;
-            const filePath = path.join(targetDir, sanitizedName);
+            const filePath = path.join(targetDir, descriptiveName);
 
             // Remove data URL prefix if present
             const base64String = base64Data.replace(/^data:image\/\w+;base64,/, '');

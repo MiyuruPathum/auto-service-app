@@ -1018,8 +1018,22 @@
                         <div className="mb-6">
                             <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Vehicle Photo</label>
                             <div 
-                                onClick={() => fileInput.current.click()} 
-                                className="w-full h-40 bg-slate-900/50 border-2 border-dashed border-slate-600/50 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:bg-indigo-600/5 hover:border-indigo-500/50 transition-all overflow-hidden relative"
+                                onClick={() => fileInput.current.click()}
+                                onPaste={(e) => {
+                                    const items = e.clipboardData?.items;
+                                    if (!items) return;
+                                    for (let item of items) {
+                                        if (item.type.startsWith('image/')) {
+                                            const file = item.getAsFile();
+                                            const reader = new FileReader();
+                                            reader.onload = (evt) => setPhotoPath(evt.target.result);
+                                            reader.readAsDataURL(file);
+                                            break;
+                                        }
+                                    }
+                                }}
+                                tabIndex={0}
+                                className="w-full h-40 bg-slate-900/50 border-2 border-dashed border-slate-600/50 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:bg-indigo-600/5 hover:border-indigo-500/50 transition-all overflow-hidden relative focus:border-indigo-500 focus:outline-none"
                             >
                                 {photoPath ? (
                                     <div className="absolute inset-0">
@@ -1034,7 +1048,7 @@
                                 ) : (
                                     <div className="text-center">
                                         <span className="text-3xl mb-2 block opacity-40">📷</span>
-                                        <span className="text-xs font-medium text-slate-400">Click to upload car photo</span>
+                                        <span className="text-xs font-medium text-slate-400">Click to upload or Ctrl+V to paste</span>
                                     </div>
                                 )}
                                 <input type="file" ref={fileInput} className="hidden" accept="image/*" onChange={(e) => {
@@ -2043,6 +2057,28 @@
                                         </label>
                                     )}
                                 </div>
+                                {!isLocked && (
+                                    <div 
+                                        className="mb-4 p-4 border-2 border-dashed border-slate-600/50 rounded-lg text-center cursor-pointer hover:border-indigo-500/50 hover:bg-indigo-600/5 transition-all focus:border-indigo-500 focus:outline-none"
+                                        tabIndex={0}
+                                        onClick={() => jobImageInputRef.current?.click()}
+                                        onPaste={(e) => {
+                                            if (isLocked) return;
+                                            const items = e.clipboardData?.items;
+                                            if (!items) return;
+                                            for (let item of items) {
+                                                if (item.type.startsWith('image/')) {
+                                                    const file = item.getAsFile();
+                                                    const syntheticEvent = { target: { files: [file] } };
+                                                    handleJobImageUpload(syntheticEvent);
+                                                    break;
+                                                }
+                                            }
+                                        }}
+                                    >
+                                        <span className="text-slate-500 text-sm">📋 Click or Ctrl+V to paste image</span>
+                                    </div>
+                                )}
                                 {jobImages.length > 0 ? (
                                     <div className="grid grid-cols-3 gap-2">
                                         {jobImages.map((img, idx) => (
@@ -3168,9 +3204,25 @@
                                                 >×</button>
                                             </div>
                                         ) : (
-                                            <label className="w-24 h-24 border-2 border-dashed border-slate-600 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 transition-colors">
+                                            <label 
+                                                className="w-24 h-24 border-2 border-dashed border-slate-600 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 transition-colors focus:border-indigo-500 focus:outline-none"
+                                                tabIndex={0}
+                                                onPaste={(e) => {
+                                                    const items = e.clipboardData?.items;
+                                                    if (!items) return;
+                                                    for (let item of items) {
+                                                        if (item.type.startsWith('image/')) {
+                                                            const file = item.getAsFile();
+                                                            const reader = new FileReader();
+                                                            reader.onload = (evt) => setPartPhotoPath(evt.target.result);
+                                                            reader.readAsDataURL(file);
+                                                            break;
+                                                        }
+                                                    }
+                                                }}
+                                            >
                                                 <span className="text-2xl">📷</span>
-                                                <span className="text-xs text-slate-500 mt-1">Upload</span>
+                                                <span className="text-xs text-slate-500 mt-1">Paste/Click</span>
                                                 <input type="file" accept="image/*" onChange={handlePartPhoto} className="hidden" />
                                             </label>
                                         )}
